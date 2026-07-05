@@ -665,8 +665,9 @@ class JungleScene extends Phaser.Scene {
         const sp = HIDER_SPAWNS[1 + i];
         const h = this.spawnEntity(sp.x, sp.y, 'hider', camoCycle[i % 3]);
         h.name = namePool.pop();
-        h.ai = { state: 'moving', target: this.pickHidingSpot({ initial: true }),
-          stuckCheck: { x: 0, y: 0, at: 0 }, relocateAt: 0, nextChirp: 0, crowdedSince: 0 };
+        h.ai = { state: 'moving', target: null, stuckCheck: { x: 0, y: 0, at: 0 },
+          relocateAt: 0, nextChirp: 0, crowdedSince: 0, cell: i };   // 1 hider per grid cell
+        h.ai.target = this.pickHidingSpot({ initial: true, cell: i });
         this.npcHiders.push(h);
       }
       const mkSeeker = (ox, oy, advanced) => {
@@ -683,6 +684,13 @@ class JungleScene extends Phaser.Scene {
 
     this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
     this.cameras.main.startFollow(this.local.sprite, false, 0.1, 0.1);
+
+    // ---- camera zoom: mobile starts zoomed in; pinch, mouse-wheel, or buttons
+    this.camZoom = IS_TOUCH ? 1.6 : 1;
+    this.minZoom = 0.8; this.maxZoom = 3;
+    this.cameras.main.setZoom(this.camZoom);
+    this.pinchPrev = 0;
+    this.input.on('wheel', (p, go, dx, dy) => this.setZoom(this.camZoom - Math.sign(dy) * 0.2));
 
     // ---- shooting
     this.paintballs = this.physics.add.group({ maxSize: 40 });
@@ -1060,6 +1068,38 @@ class JungleScene extends Phaser.Scene {
         this.joyNub.setPosition(this.joyBase.x, this.joyBase.y);
       }
     });
+
+    // zoom +/- buttons on the right edge (pinch also works)
+    const zx = CANVAS_W - 42;
+    const mkZoom = (y, label, dz) => {
+      const b = this.add.image(zx, y, 'joy_pad').setScrollFactor(0).setDepth(1e6)
+        .setAlpha(0.5).setScale(0.55).setInteractive({ useHandCursor: true });
+      this.add.text(zx, y - 2, label, { fontFamily: 'Kenney Future', fontSize: '24px',
+        color: '#ffffff', stroke: '#000000', strokeThickness: 3 })
+        .setOrigin(0.5).setScrollFactor(0).setDepth(1e6);
+      b.on('pointerdown', (p, lx, ly, e) => { if (e) e.stopPropagation(); this.setZoom(this.camZoom + dz); });
+    };
+    mkZoom(CANVAS_H / 2 - 40, '+', 0.3);
+    mkZoom(CANVAS_H / 2 + 20, '-', -0.3);
+  }
+
+  setZoom(z) {
+    this.camZoom = Phaser.Math.Clamp(z, this.minZoom, this.maxZoom);
+    this.cameras.main.setZoom(this.camZoom);
+  }
+
+  // two-finger pinch zoom (ignores the finger driving the joystick)
+  handlePinch() {
+    const p1 = this.input.pointer1, p2 = this.input.pointer2;
+    const ok = p1 && p1.isDown && p2 && p2.isDown &&
+      p1.id !== this.joyPointerId && p2.id !== this.joyPointerId;
+    if (ok) {
+      const d = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
+      if (this.pinchPrev) this.setZoom(this.camZoom * (d / this.pinchPrev));
+      this.pinchPrev = d;
+    } else {
+      this.pinchPrev = 0;
+    }
   }
 
   updateJoystick() {
@@ -1138,42 +1178,72 @@ class JungleScene extends Phaser.Scene {
     return still && ent.stillTimer > 900 && this.time.now < this.strobeUntil;
   }
 
-  // Cover-seeking: hide next to real foliage, weighted toward the dense zones.
-  // opts.initial: round-start spots keep >=1000px from the seeker spawn corner
-  // opts.awayFrom: repositioning keeps >=300px from whoever crowded them
+  // Cover-seeking, spread EVENLY across the map. Each NPC hider owns a cell of
+  // a 3x2 grid (opts.cell) and hides near a bush inside it, so they no longer
+  // all pile into one corner. opts.initial keeps >=1000px from the seeker spawn;
+  // opts.awayFrom keeps >=300px from whoever crowded them.
   pickHidingSpot(opts) {
     const initial = opts && opts.initial;
     const awayFrom = opts && opts.awayFrom;
+    const cell = opts && opts.cell;
+    const cols = 3, rows = 2, cw = WORLD_W / cols, ch = WORLD_H / rows;
+    const inCell = (x, y) => {
+      if (cell === undefined || cell === null) return true;
+      const c = ((cell % (cols * rows)) + cols * rows) % (cols * rows);
+      const cx = c % cols, cy = Math.floor(c / cols);
+      return x >= cx * cw && x < (cx + 1) * cw && y >= cy * ch && y < (cy + 1) * ch;
+    };
+    const pool = (cell === undefined || cell === null)
+      ? this.bushes : this.bushes.filter(b => inCell(b.x, b.y));
+    const bushes = pool.length ? pool : this.bushes;
     for (let tries = 0; tries < 40; tries++) {
-      const b = this.bushes[Math.floor(Math.random() * this.bushes.length)];
+      const b = bushes[Math.floor(Math.random() * bushes.length)];
       if (!b) break;
-      const zone = this.zoneAt(b.x, b.y);
-      const weight = (zone === 'A' || zone === 'C') ? 0.85 : 0.4;
-      if (Math.random() > weight) continue;
       const spot = { x: b.x + (Math.random() - 0.5) * 30, y: b.y + (Math.random() - 0.5) * 30 };
       if (spot.x < 50 || spot.x > WORLD_W - 50 || spot.y < 50 || spot.y > WORLD_H - 50) continue;
       if (initial) {
-        // relax 1000 -> 700 if the map keeps refusing us
         const minD = tries < 25 ? 1000 : 700;
         if (Phaser.Math.Distance.Between(spot.x, spot.y, SEEKER_SPAWN.x, SEEKER_SPAWN.y) < minD) continue;
       }
       if (awayFrom &&
           Phaser.Math.Distance.Between(spot.x, spot.y, awayFrom.x, awayFrom.y) < 300) continue;
       const crowded = this.npcHiders && this.npcHiders.some(h =>
-        h.ai && h.ai.target && Phaser.Math.Distance.Between(spot.x, spot.y, h.ai.target.x, h.ai.target.y) < 90);
+        h.ai && h.ai.target && Phaser.Math.Distance.Between(spot.x, spot.y, h.ai.target.x, h.ai.target.y) < 150);
       const nearHunter = this.npcSeekers && this.npcSeekers.some(k =>
-        Phaser.Math.Distance.Between(spot.x, spot.y, k.sprite.x, k.sprite.y) < 260);
+        Phaser.Math.Distance.Between(spot.x, spot.y, k.sprite.x, k.sprite.y) < 240);
       if (crowded || nearHunter) continue;
       return spot;
     }
-    // fallback: far half of the map
-    return { x: WORLD_W / 2 + Math.random() * (WORLD_W / 2 - 200),
-             y: 150 + Math.random() * (WORLD_H - 300) };
+    const b = bushes[Math.floor(Math.random() * bushes.length)];
+    return b ? { x: b.x, y: b.y } : { x: WORLD_W / 2, y: WORLD_H / 2 };
   }
 
   npcHiderAI(ent, time, delta) {
     if (ent.role !== 'hider') return;
     const s = ent.sprite, ai = ent.ai;
+
+    // being pursued? break for it — flee away from the chaser, curving toward
+    // open space so we don't pin against a wall. (cat & mouse)
+    const chaser = this.phase === 'SEEK' && this.npcSeekers.find(k =>
+      k.role === 'seeker' && k.ai && k.ai.chase && k.ai.chase.target === ent);
+    if (chaser) {
+      let ax = s.x - chaser.sprite.x, ay = s.y - chaser.sprite.y;
+      const al = Math.hypot(ax, ay) || 1; ax /= al; ay /= al;
+      let cx = WORLD_W / 2 - s.x, cy = WORLD_H / 2 - s.y;
+      const cl = Math.hypot(cx, cy) || 1; cx /= cl; cy /= cl;
+      let fx = ax * 0.75 + cx * 0.35, fy = ay * 0.75 + cy * 0.35;
+      const fl = Math.hypot(fx, fy) || 1;
+      s.body.setVelocity((fx / fl) * PLAYER_SPEED, (fy / fl) * PLAYER_SPEED);
+      s.rotation = Math.atan2(fy, fx);
+      ai.state = 'fleeing';
+      return;
+    }
+    if (ai.state === 'fleeing') {
+      // escaped — go re-hide in a fresh region
+      ai.state = 'moving';
+      ai.cell = ((ai.cell || 0) + 1 + Math.floor(Math.random() * 5)) % 6;
+      ai.target = this.pickHidingSpot({ cell: ai.cell });
+    }
 
     if (ai.state === 'moving' && ai.target) {
       const d = Phaser.Math.Distance.Between(s.x, s.y, ai.target.x, ai.target.y);
@@ -1192,7 +1262,7 @@ class JungleScene extends Phaser.Scene {
         // unstick: if barely moving for a while, pick a different spot
         if (time - ai.stuckCheck.at > 1200) {
           if (Phaser.Math.Distance.Between(s.x, s.y, ai.stuckCheck.x, ai.stuckCheck.y) < 20) {
-            ai.target = this.pickHidingSpot();
+            ai.target = this.pickHidingSpot({ cell: ai.cell });
           }
           ai.stuckCheck = { x: s.x, y: s.y, at: time };
         }
@@ -1209,16 +1279,19 @@ class JungleScene extends Phaser.Scene {
         } else if (time - ai.crowdedSince > ai.crowdPatience) {
           ai.crowdedSince = 0;
           ai.state = 'moving';
-          ai.target = this.pickHidingSpot({ awayFrom: { x: crowder.sprite.x, y: crowder.sprite.y } });
+          ai.cell = ((ai.cell || 0) + 1 + Math.floor(Math.random() * 5)) % 6;
+          ai.target = this.pickHidingSpot({ cell: ai.cell,
+            awayFrom: { x: crowder.sprite.x, y: crowder.sprite.y } });
           return;
         }
       } else {
         ai.crowdedSince = 0;
       }
-      // periodic relocation until found or round ends (SEEK phase only)
+      // periodic relocation until found or round ends — rotate to a new region
       if (this.phase === 'SEEK' && time >= ai.relocateAt) {
         ai.state = 'moving';
-        ai.target = this.pickHidingSpot();
+        ai.cell = ((ai.cell || 0) + 1 + Math.floor(Math.random() * 5)) % 6;
+        ai.target = this.pickHidingSpot({ cell: ai.cell });
       }
       // occasional cheeky chirp while hidden
       if (this.phase === 'SEEK') {
@@ -1781,6 +1854,7 @@ class JungleScene extends Phaser.Scene {
 
     // ---- local movement (seekers are frozen during grace)
     this.updateJoystick();
+    if (IS_TOUCH) this.handlePinch();
     const k = this.keys;
     let dx = (k.A.isDown || k.LEFT.isDown ? -1 : 0) + (k.D.isDown || k.RIGHT.isDown ? 1 : 0);
     let dy = (k.W.isDown || k.UP.isDown ? -1 : 0) + (k.S.isDown || k.DOWN.isDown ? 1 : 0);
@@ -1908,7 +1982,9 @@ class JungleScene extends Phaser.Scene {
     const mm = String(Math.floor(remain / 60000)).padStart(2, '0');
     const ss = String(Math.floor(remain % 60000 / 1000)).padStart(2, '0');
     this.hudTimer.setText(`${mm}:${ss}`);
-    if (this.phase === 'SEEK' && remain <= 0) this.endRound('hiders');
+    // Online rounds end ONLY on the server's roundEnd event — the client never
+    // decides a winner locally (prevents premature/false end screens).
+    if (!this.online && this.phase === 'SEEK' && remain <= 0) this.endRound('hiders');
   }
 }
 

@@ -198,9 +198,9 @@ function startRound(room, io) {
     const npcSeekers = total >= 8 ? 3 : 2;
     addNpc('seeker', true);                                 // 1 stalker
     for (let i = 1; i < npcSeekers; i++) addNpc('seeker', false);   // hunters
-    for (let i = 0; i < total - npcSeekers; i++) addNpc('hider', false);
+    for (let i = 0; i < total - npcSeekers; i++) addNpc('hider', false).ai.cell = i;
   } else {
-    for (let i = 0; i < npcHiderCount(humans.length); i++) addNpc('hider', false);
+    for (let i = 0; i < npcHiderCount(humans.length); i++) addNpc('hider', false).ai.cell = i;
     addNpc('seeker', true);                                 // stalker, always
     if (humanSeekers.length === 0) addNpc('seeker', false); // hunter fills the slot
   }
@@ -219,7 +219,7 @@ function startRound(room, io) {
       p.x = SEEKER_SPAWN.x + Math.random() * 80;
       p.y = SEEKER_SPAWN.y + Math.random() * 80;
     }
-    if (!p.human && p.role === 'hider') p.ai.target = pickHidingSpot(room, { initial: true });
+    if (!p.human && p.role === 'hider') p.ai.target = pickHidingSpot(room, { initial: true, cell: p.ai.cell });
   }
 
   // anti-shutout buff bookkeeping
@@ -308,30 +308,37 @@ function zoneAt(x, y) {
   return null;
 }
 
-// Server has no bush map; dense zones ARE the cover by construction.
-// opts.initial: round-start spots keep >=1000px from the seeker spawn corner.
-// opts.awayFrom: repositioning keeps >=300px from whoever crowded them.
+// A random point inside cell `cell` of a 3x2 grid over the world.
+function regionSpot(cell) {
+  const cols = 3, rows = 2, c = ((cell % (cols * rows)) + cols * rows) % (cols * rows);
+  const cx = c % cols, cy = Math.floor(c / cols), cw = WORLD_W / cols, ch = WORLD_H / rows, m = 140;
+  return { x: cx * cw + m + Math.random() * (cw - 2 * m),
+           y: cy * ch + m + Math.random() * (ch - 2 * m) };
+}
+
+// Even distribution: each NPC hider owns a grid cell (opts.cell) so they spread
+// across the whole map instead of clumping. opts.initial keeps >=1000px from the
+// seeker spawn; opts.awayFrom keeps >=300px from whoever crowded them.
 function pickHidingSpot(room, opts) {
   const initial = opts && opts.initial;
   const awayFrom = opts && opts.awayFrom;
+  const cell = opts && opts.cell;
+  const hasCell = cell !== undefined && cell !== null;
   for (let i = 0; i < 30; i++) {
-    const z = Math.random() < 0.85 ? pick([ZONES[0], ZONES[2]]) : pick(ZONES);
-    const spot = { x: z.rect[0] + Math.random() * z.rect[2],
-                   y: z.rect[1] + Math.random() * z.rect[3] };
-    if (initial) {
-      const minD = i < 20 ? 1000 : 700;
-      if (dist(spot, SEEKER_SPAWN) < minD) continue;
-    }
+    const spot = (hasCell && Math.random() < 0.85)
+      ? regionSpot(cell)
+      : { x: rand(120, WORLD_W - 120), y: rand(120, WORLD_H - 120) };
+    if (initial && dist(spot, SEEKER_SPAWN) < (i < 20 ? 1000 : 700)) continue;
     if (awayFrom && dist(spot, awayFrom) < 300) continue;
     let ok = true;
     for (const p of room.players.values()) {
       if (!p.human && p.role === 'hider' && p.ai && p.ai.target &&
-          dist(spot, p.ai.target) < 90) ok = false;
-      if (p.role === 'seeker' && dist(spot, p) < 260) ok = false;
+          dist(spot, p.ai.target) < 150) ok = false;
+      if (p.role === 'seeker' && dist(spot, p) < 240) ok = false;
     }
     if (ok) return spot;
   }
-  return { x: rand(WORLD_W / 2, WORLD_W - 150), y: rand(150, WORLD_H - 150) };
+  return hasCell ? regionSpot(cell) : { x: rand(120, WORLD_W - 120), y: rand(120, WORLD_H - 120) };
 }
 
 function isStrobing(room, e) {
@@ -343,6 +350,33 @@ function isSpottable(room, e) {
 
 function npcHiderTick(room, e, dtMs, now) {
   const ai = e.ai;
+
+  // being pursued? flee away from the chaser, curving toward open space so we
+  // don't pin against a wall. (cat & mouse)
+  let chaser = null;
+  if (room.phase === 'SEEK') {
+    for (const k of room.players.values()) {
+      if (k.role === 'seeker' && k.ai && k.ai.chase && k.ai.chase.target === e) { chaser = k; break; }
+    }
+  }
+  if (chaser) {
+    let ax = e.x - chaser.x, ay = e.y - chaser.y;
+    const al = Math.hypot(ax, ay) || 1; ax /= al; ay /= al;
+    let cx = WORLD_W / 2 - e.x, cy = WORLD_H / 2 - e.y;
+    const cl = Math.hypot(cx, cy) || 1; cx /= cl; cy /= cl;
+    let fx = ax * 0.75 + cx * 0.35, fy = ay * 0.75 + cy * 0.35;
+    const fl = Math.hypot(fx, fy) || 1;
+    e.input.dx = fx / fl; e.input.dy = fy / fl;
+    e.rot = Math.atan2(fy, fx);
+    ai.state = 'fleeing';
+    return;
+  }
+  if (ai.state === 'fleeing') {
+    ai.state = 'moving';
+    ai.cell = ((ai.cell || 0) + 1 + Math.floor(Math.random() * 5)) % 6;
+    ai.target = pickHidingSpot(room, { cell: ai.cell });
+  }
+
   if (ai.state === 'moving' && ai.target) {
     const d = dist(e, ai.target);
     if (d < 10) {
@@ -357,7 +391,7 @@ function npcHiderTick(room, e, dtMs, now) {
       e.input.dx = Math.cos(a) * speed; e.input.dy = Math.sin(a) * speed;
       e.rot = a;
       if (now - ai.stuck.at > 1200) {
-        if (dist(e, ai.stuck) < 20) ai.target = pickHidingSpot(room);
+        if (dist(e, ai.stuck) < 20) ai.target = pickHidingSpot(room, { cell: ai.cell });
         ai.stuck = { x: e.x, y: e.y, at: now };
       }
     }
@@ -375,7 +409,8 @@ function npcHiderTick(room, e, dtMs, now) {
       } else if (now - ai.crowdedSince > ai.crowdPatience) {
         ai.crowdedSince = 0;
         ai.state = 'moving';
-        ai.target = pickHidingSpot(room, { awayFrom: { x: crowder.x, y: crowder.y } });
+        ai.cell = ((ai.cell || 0) + 1 + Math.floor(Math.random() * 5)) % 6;
+        ai.target = pickHidingSpot(room, { cell: ai.cell, awayFrom: { x: crowder.x, y: crowder.y } });
         return;
       }
     } else {
@@ -384,7 +419,8 @@ function npcHiderTick(room, e, dtMs, now) {
     if (room.phase === 'SEEK') {
       if (now >= ai.relocateAt && ai.relocateAt > 0) {
         ai.state = 'moving';
-        ai.target = pickHidingSpot(room);
+        ai.cell = ((ai.cell || 0) + 1 + Math.floor(Math.random() * 5)) % 6;
+        ai.target = pickHidingSpot(room, { cell: ai.cell });
       }
       if (!ai.nextChirp) ai.nextChirp = now + rand(15000, 40000);
       if (now >= ai.nextChirp) {
