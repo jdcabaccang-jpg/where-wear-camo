@@ -1,0 +1,16 @@
+{
+  "name": "where-wear-camo-server",
+  "version": "0.3.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test-two-clients.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.7.0"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.0"
+  }
+}

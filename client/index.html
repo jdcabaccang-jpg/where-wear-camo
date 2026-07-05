@@ -1,0 +1,1849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Where/Wear Camo</title>
+<style>
+  @font-face { font-family: 'Kenney Future'; src: url('assets/fonts/Kenney Future.ttf'); }
+  @font-face { font-family: 'Kenney Pixel'; src: url('assets/fonts/Kenney Pixel.ttf'); }
+  html, body { margin: 0; padding: 0; background: #1a2a1a; height: 100%; overflow: hidden; }
+  #game { display: flex; justify-content: center; align-items: center; height: 100%; }
+</style>
+<script src="lib/phaser.min.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+'use strict';
+
+// ---------------------------------------------------------------- constants
+const WORLD_W = 2400, WORLD_H = 1800;
+const CANVAS_W = 1280, CANVAS_H = 720;
+const TILE = 64;
+const T_GRASS = [0, 1, 2, 3], T_DIRT = [4, 5], T_STONE = [6, 7, 8], T_WATER = [18, 19];
+const PLAYER_SPEED = 160;
+const FIRE_COOLDOWN = 800, PAINTBALL_SPEED = 500, PAINTBALL_TTL = 1200;
+const BLEND_COOLDOWN = 3000;
+const STROBE_EVERY = 10000, STROBE_LEN = 800, STROBE_WARN = 1500;
+// Proximity music: the soundtrack is the radar. Base 0.8x; a nearby
+// hider/seeker pairing pushes it to 1.0x, tight quarters to 1.2x.
+const MUSIC_BASE = 0.8, MUSIC_NEAR = 1.0, MUSIC_CLOSE = 1.2;
+const NEAR_RADIUS = 320, CLOSE_RADIUS = 160;
+const CHIRP_COOLDOWN = 1000;
+const MAX_SPLATS = 90;
+const GRACE_LEN = 20000, SEEK_LEN = 100000;  // 2:00 round total
+const RELOCATE_MIN = 25000, RELOCATE_MAX = 45000;
+// NPC seeker chase: move/chirp/strobe near a seeker and it locks onto you.
+const NPC_DETECT = 280, NPC_DETECT_ADV = 340;    // notice radius (advanced NPC sees farther)
+const NPC_ESCAPE = 450, NPC_ESCAPE_ADV = 500;    // chase breaks outside this radius...
+const CHASE_MAX = 15000;                          // ...or after 15s of pursuit
+const CHASE_SPEED = 152;                          // slightly slower than a sprinting player
+const CHASE_SHOT_EVERY = 900;
+const MAP_SEED = 0xCA340;
+
+const ZONES = [
+  { id: 'A', name: 'Deep Jungle', rect: [200, 200, 600, 500],  color: 0x00aa00 },
+  { id: 'B', name: 'Riverbank',   rect: [600, 750, 800, 300],  color: 0xc8a45a },
+  { id: 'C', name: 'Forest Edge', rect: [1600, 300, 600, 600], color: 0x6b8e23 },
+  { id: 'D', name: 'Clearing',    rect: [1200, 1200, 700, 400], color: 0xdddd00 },
+];
+const CAMO = {
+  jungle: { tint: 0x4a7c3f }, desert: { tint: 0xc8a45a }, urban: { tint: 0x7a7a7a },
+};
+
+const HIDER_SPAWNS = [
+  { x: 300, y: 300 }, { x: 500, y: 800 }, { x: 900, y: 400 }, { x: 1100, y: 1300 },
+  { x: 1500, y: 500 }, { x: 1800, y: 900 }, { x: 2100, y: 300 }, { x: 2000, y: 1500 },
+];
+const SEEKER_SPAWN = { x: 110, y: 110 };
+
+// NPC name pools. Offline names are OBVIOUSLY bots; online names (used by the
+// Step-3 server) read like real players so NPCs are indistinguishable.
+const BOT_NAMES = ['BOT-FERN', 'BOT-RIVER', 'BOT-MOSS', 'BOT-TWIG', 'BOT-PEBBLE',
+  'CPU-ROCKY', 'CPU-BIRCH', 'BOT-SHRUB', 'BOT-LICHEN', 'CPU-CEDAR', 'BOT-THORN',
+  'CPU-WILLOW'];
+// NPC seekers got meaner: hunters fire 15% more often, stalkers 25% more.
+const HUNTER_SHOT_MUL = 1 / 1.15, STALKER_SHOT_MUL = 1 / 1.25;
+const LATE_SEEKER_TRIGGER_MS = 45000;   // offline 3rd seeker wakes at 45s left...
+const LATE_SEEKER_MIN_HIDERS = 2;       // ...or when fewer than 2 hiders remain
+const ONLINE_NAMES = ['jake02', 'greenbean', 'swampqueen', 'Milo', 'xCamoKing',
+  'HideNSneak', 'notabot123', 'TTV_Bushman', 'peekaboo_', 'lil_sprout', 'Dmitri',
+  'ferngully', 'SneakyPete', 'mudpie', 'ghostedu', 'Wren'];
+
+// ---------------------------------------------------------------- map themes
+// Same generator, different Kenney tile frames + foliage palettes. Frames are
+// from tilesheet_complete.png row 0 (verified): grass 0-3, dirt 4-5, stone 6-8,
+// snow 11, terracotta 12-15, water 18-19. Foliage recolors via tint.
+const MAPS = [
+  { name: 'JUNGLE', bg: 0x3e6b34,
+    base: 0, patches: [1, 2, 3], band: { mostly: [4, 5], rest: [6, 7, 8] },
+    water: [18, 19], treeTint: null, bushTint: null, tuftTint: null },
+  { name: 'AUTUMN WOODS', bg: 0x6b5a2c,
+    base: 0, patches: [4, 5, 2], band: { mostly: [12, 13], rest: [14, 15] },
+    water: [18, 19], treeTint: 0xe08a3a, bushTint: 0xd8913e, tuftTint: 0xcc8844 },
+  { name: 'BADLANDS', bg: 0x8a6a42,
+    base: 4, patches: [5, 6, 12], band: { mostly: [6, 7], rest: [8, 13] },
+    water: [18, 19], treeTint: 0xb08048, bushTint: 0xc09a58, tuftTint: 0xb89050 },
+];
+
+const TREES_TRUNK  = ['004','005','006','007','008','009','010','011'];
+const TREES_CANOPY = ['037','038','039','040','041','042'];
+const BUSHES       = ['049','050','051','052'];
+const ROCKS        = ['053','054','055'];
+const TUFTS        = ['001','002','003'];
+
+const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0 ||
+                 location.search.includes('touch');
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// Bird chirp: no bird audio exists in the Kenney library, so synthesize two
+// quick rising blips (spec-approved fallback for missing sound roles).
+function synthChirp(volume) {
+  try {
+    const ctx = synthChirp.ctx || (synthChirp.ctx = new (window.AudioContext || window.webkitAudioContext)());
+    const blip = (t0, f0, f1) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = 'sine';
+      o.frequency.setValueAtTime(f0, ctx.currentTime + t0);
+      o.frequency.exponentialRampToValueAtTime(f1, ctx.currentTime + t0 + 0.08);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime + t0);
+      g.gain.exponentialRampToValueAtTime(volume, ctx.currentTime + t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t0 + 0.12);
+      o.start(ctx.currentTime + t0); o.stop(ctx.currentTime + t0 + 0.14);
+    };
+    blip(0, 1300, 1900);
+    blip(0.14, 1500, 2200);
+  } catch (e) { /* audio not available */ }
+}
+
+// UI palette: dark moss panels, white/yellow text, medium-green buttons.
+// (The baked UI Pixel Pack tiles are white-filled; tinting darkens them.)
+const UI_PANEL_TINT = 0x3a5230;
+const UI_BTN_TINT = 0x6da24e;
+const UI_BTN_DOWN_TINT = 0x527d3a;
+const UI_TEXT = '#ffffff', UI_HEAD = '#ffd94a', UI_SOFT = '#cfe8c2', UI_DIM = '#9db696';
+// Players always render above world art; the silhouette IS the game.
+const ENTITY_DEPTH = 3000;
+
+const pxText = (scene, x, y, str, size, color) => scene.add.text(x, y, str, {
+  fontFamily: 'Kenney Pixel', fontSize: size, color: color || UI_TEXT,
+  stroke: '#1c2b14', strokeThickness: 3,
+}).setOrigin(0.5);
+
+const sfxVol = (scene) => scene.registry.get('sfxVol');
+
+// ---------------------------------------------------------------- boot
+class BootScene extends Phaser.Scene {
+  constructor() { super('boot'); }
+  preload() {
+    this.load.spritesheet('tiles', 'assets/tiles/tilesheet_complete.png',
+      { frameWidth: TILE, frameHeight: TILE });
+    this.load.spritesheet('crosshairs', 'assets/ui/crosshairs_tilesheet_white.png',
+      { frameWidth: 64, frameHeight: 64, spacing: 5 });
+    this.load.image('player_stand', 'assets/sprites/manBlue_stand.png');
+    this.load.image('seeker', 'assets/sprites/seeker.png');
+    this.load.image('paintball', 'assets/sprites/circle_05.png');
+    this.load.image('pattern29', 'assets/fx/pattern_0029.png');
+    this.load.image('splat0', 'assets/fx/splat00.png');
+    this.load.image('splat1', 'assets/fx/splat04.png');
+    this.load.image('splat2', 'assets/fx/splat07.png');
+    this.load.image('pxpanel', 'assets/ui/pxpanel_green.png');
+    this.load.image('pxbutton', 'assets/ui/pxbutton_green.png');
+    this.load.image('pxbutton_down', 'assets/ui/pxbutton_green_down.png');
+    this.load.image('joy_pad', 'assets/ui/joystick_circle_pad_a.png');
+    this.load.image('joy_nub', 'assets/ui/joystick_circle_nub_a.png');
+    this.load.image('icon_pause', 'assets/ui/icon_pause.png');
+    for (const n of [...TREES_TRUNK, ...TREES_CANOPY, ...BUSHES, ...ROCKS, ...TUFTS]) {
+      this.load.image('f' + n, `assets/foliage/foliagePack_${n}.png`);
+    }
+    this.load.audio('shoot', 'assets/audio/laserSmall_000.ogg');
+    this.load.audio('hit', 'assets/audio/impactSoft_heavy_000.ogg');
+    this.load.audio('click', 'assets/audio/click1.ogg');
+    this.load.audio('ambient', 'assets/audio/Retro Beat.ogg');
+  }
+  create() {
+    for (const k of ['seeker', 'pxpanel', 'pxbutton', 'pxbutton_down']) {
+      this.textures.get(k).setFilter(Phaser.Textures.FilterMode.NEAREST);
+    }
+    if (this.registry.get('musicVol') === undefined) {
+      this.registry.set('musicVol', 0.35);
+      this.registry.set('sfxVol', 0.6);
+    }
+    this.scene.start('menu');
+  }
+}
+
+// ---------------------------------------------------------------- menu
+class MenuScene extends Phaser.Scene {
+  constructor() { super('menu'); }
+  create() {
+    this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x22381c);
+    this.add.nineslice(CANVAS_W / 2, CANVAS_H / 2 + 20, 'pxpanel', 0, 180, 130, 6, 6, 6, 6)
+      .setScale(3).setTint(UI_PANEL_TINT);
+    pxText(this, CANVAS_W / 2, 140, 'WHERE/WEAR CAMO', '64px', UI_HEAD);
+    pxText(this, CANVAS_W / 2, 192, 'a hide & seek party game', '26px', UI_SOFT);
+
+    makePxButton(this, CANVAS_W / 2, 300, 'OFFLINE MODE', () => {
+      this.sound.play('click', { volume: sfxVol(this) });
+      this.scene.start('jungle');
+    });
+    makePxButton(this, CANVAS_W / 2, 385, 'ONLINE MODE', () => {
+      this.sound.play('click', { volume: sfxVol(this) });
+      this.scene.start('online');
+    });
+    makePxButton(this, CANVAS_W / 2, 470, 'SETTINGS', () => {
+      this.sound.play('click', { volume: sfxVol(this) });
+      this.scene.start('settings', { from: 'menu' });
+    });
+    pxText(this, CANVAS_W / 2, CANVAS_H - 28, 'assets by Kenney (CC0) - kenney.nl', '18px', UI_DIM);
+  }
+}
+
+function makePxButton(scene, x, y, label, onClick, disabledNote) {
+  const disabled = !onClick;
+  const btn = scene.add.nineslice(x, y, 'pxbutton', 0, 110, 16, 6, 6, 0, 0).setScale(3.4)
+    .setScrollFactor(0).setDepth(2e6).setTint(disabled ? 0x4a5c42 : UI_BTN_TINT);
+  const txt = pxText(scene, x, y - 3, label, '30px', disabled ? UI_DIM : UI_TEXT)
+    .setScrollFactor(0).setDepth(2e6 + 1);
+  // the label (and any note) lives and dies with its button
+  btn.once('destroy', () => { txt.destroy(); if (btn.noteText) btn.noteText.destroy(); });
+  if (disabled) {
+    btn.setAlpha(0.7);
+    if (disabledNote) btn.noteText = pxText(scene, x + 130, y - 24, disabledNote, '16px', UI_SOFT)
+      .setScrollFactor(0).setDepth(2e6 + 1);
+    return btn;
+  }
+  btn.setInteractive({ useHandCursor: true });
+  btn.on('pointerdown', (p, lx, ly, event) => {
+    if (event) event.stopPropagation();
+    btn.setTexture('pxbutton_down').setTint(UI_BTN_DOWN_TINT); txt.setY(y + 1);
+  });
+  btn.on('pointerup', (p, lx, ly, event) => {
+    if (event) event.stopPropagation();
+    btn.setTexture('pxbutton').setTint(UI_BTN_TINT); txt.setY(y - 3);
+    onClick();
+  });
+  btn.on('pointerout', () => { btn.setTexture('pxbutton').setTint(UI_BTN_TINT); txt.setY(y - 3); });
+  return btn;
+}
+
+// ---------------------------------------------------------------- online lobby
+// When the game server itself serves the page (production), talk same-origin.
+// The :8123 python dev server is the only case where the server lives on :3000.
+const SERVER_URL = location.port === '8123'
+  ? `${location.protocol}//${location.hostname}:3000`
+  : location.origin;
+
+function loadSocketIo() {
+  if (window.io) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tag = document.createElement('script');
+    tag.src = SERVER_URL + '/socket.io/socket.io.js';
+    tag.onload = resolve;
+    tag.onerror = () => reject(new Error('server unreachable'));
+    document.head.appendChild(tag);
+  });
+}
+
+class OnlineScene extends Phaser.Scene {
+  constructor() { super('online'); }
+
+  create() {
+    this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x22381c);
+    this.panel = this.add.nineslice(CANVAS_W / 2, CANVAS_H / 2, 'pxpanel', 0, 190, 140, 6, 6, 6, 6)
+      .setScale(3).setTint(UI_PANEL_TINT);
+    pxText(this, CANVAS_W / 2, 130, 'ONLINE MODE', '48px', UI_HEAD);
+    this.status = pxText(this, CANVAS_W / 2, 176, 'connecting...', '22px', UI_SOFT);
+    this.ui = [];           // per-state widgets, cleared on state change
+    this.domInput = null;
+
+    loadSocketIo().then(() => {
+      this.sock = window.game.socket && window.game.socket.connected
+        ? window.game.socket : io(SERVER_URL);
+      window.game.socket = this.sock;
+      this.bindSocket();
+      this.showConnect();
+    }).catch(() => {
+      this.status.setText('server offline - start it with: node server/server.js');
+      this.clearUi();
+      this.ui.push(makePxButton(this, CANVAS_W / 2, 480, 'BACK', () => this.exitToMenu()));
+    });
+    this.events.on('shutdown', () => this.teardown());
+  }
+
+  bindSocket() {
+    const s = this.sock;
+    s.off();               // this scene owns the lobby-stage handlers
+    s.on('roomJoined', (st) => { this.youId = st.youId; this.showLobby(st); });
+    s.on('lobbyUpdate', (st) => { if (this.inLobby) this.showLobby(st); });
+    s.on('hostChanged', (d) => { if (this.lastState) { this.lastState.hostId = d.hostId; this.showLobby(this.lastState); } });
+    s.on('errorMsg', (msg) => this.status.setText(String(msg)));
+    s.on('roundStart', (data) => {
+      this.scene.start('jungle', { online: true, net: data });
+    });
+    s.on('disconnect', () => this.status.setText('disconnected'));
+  }
+
+  // ---- state: name + create/join/random
+  showConnect() {
+    this.inLobby = false;
+    this.clearUi();
+    this.status.setText('pick a name, then create or join');
+    this.makeDomInput('username', 'player name (max 16)', CANVAS_H * 0.31);
+    this.ui.push(makePxButton(this, CANVAS_W / 2, 320, 'CREATE ROOM', () => {
+      this.sendName(); this.sock.emit('createRoom');
+    }));
+    this.ui.push(makePxButton(this, CANVAS_W / 2, 395, 'QUICK JOIN', () => {
+      this.sendName(); this.sock.emit('joinRandom');
+    }));
+    this.ui.push(makePxButton(this, CANVAS_W / 2, 470, 'JOIN WITH CODE', () => {
+      this.sendName();
+      const code = (this.domInput && this.domInput.value || '').trim();
+      if (/^[A-Za-z0-9]{5}$/.test(code)) this.sock.emit('joinRoom', code);
+      else {
+        this.status.setText('type the 5-letter room code in the box, then press JOIN');
+        this.nameSent = this.nameSent || (this.domInput ? this.domInput.value : '');
+        this.domInput.value = '';
+        this.domInput.placeholder = 'ROOM CODE (5 letters)';
+      }
+    }));
+    this.ui.push(makePxButton(this, CANVAS_W / 2, 545, 'BACK', () => this.exitToMenu()));
+  }
+
+  sendName() {
+    const v = this.domInput && this.domInput.value.trim();
+    // if the box currently holds a room code, fall back to the remembered name
+    const name = (v && !/^[A-Z0-9]{5}$/.test(v) ? v : this.nameSent) || '';
+    if (name) { this.sock.emit('setUsername', name); this.nameSent = name; }
+  }
+
+  // ---- state: lobby (code + roster + host settings + start)
+  showLobby(st) {
+    this.inLobby = true;
+    this.lastState = st;
+    this.clearUi();
+    this.status.setText('share the code with friends');
+    const isHost = st.hostId === this.youId;
+    const L = CANVAS_W / 2 - 210, R = CANVAS_W / 2 + 215;
+
+    // left column: code + players
+    this.ui.push(pxText(this, L, 226, 'ROOM  ' + st.code, '40px', '#ffffff'));
+    this.ui.push(makePxButton(this, L, 282, 'COPY CODE', () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(st.code).catch(() => {});
+      this.status.setText('code copied - send it to your friends');
+    }).setScale(2.4));
+    const names = st.players.map(p => p.id === this.youId ? p.name + ' (you)' : p.name);
+    this.ui.push(pxText(this, L, 336,
+      `players ${st.players.length}/${st.maxHumans}  (+${st.npcCount} more)`, '19px', UI_SOFT));
+    names.slice(0, 9).forEach((n, i) => {
+      this.ui.push(pxText(this, L, 366 + i * 24, n, '19px', UI_TEXT));
+    });
+
+    // right column: match settings (host edits, everyone sees)
+    this.ui.push(pxText(this, R, 226, 'MATCH SETTINGS', '24px', UI_HEAD));
+    const OPTS = {
+      graceMs: { label: 'GRACE', opts: [15000, 20000, 30000], fmt: v => (v / 1000) + 's' },
+      seekMs: { label: 'SEEK', opts: [60000, 100000, 140000], fmt: v => (v / 1000) + 's' },
+      rounds: { label: 'ROUNDS', opts: [1, 3, 5], fmt: v => String(v) },
+      minPlayers: { label: 'MIN PLAYERS', opts: [1, 2, 4], fmt: v => String(v) },
+    };
+    let sy = 268;
+    for (const key of Object.keys(OPTS)) {
+      const cfg = OPTS[key];
+      const cur = st.settings ? st.settings[key] : cfg.opts[0];
+      this.ui.push(pxText(this, R - 105, sy, cfg.label, '19px', UI_SOFT));
+      this.ui.push(pxText(this, R + 55, sy, cfg.fmt(cur), '21px', UI_TEXT));
+      if (isHost) {
+        const step = (dir) => {
+          const i = cfg.opts.indexOf(cur);
+          const next = cfg.opts[(i + dir + cfg.opts.length) % cfg.opts.length];
+          this.sock.emit('updateSettings', { [key]: next });
+        };
+        const lt = pxText(this, R + 5, sy, '<', '26px', UI_HEAD).setInteractive({ useHandCursor: true });
+        const gt = pxText(this, R + 110, sy, '>', '26px', UI_HEAD).setInteractive({ useHandCursor: true });
+        lt.on('pointerdown', (p, lx, ly, e) => { if (e) e.stopPropagation(); step(-1); });
+        gt.on('pointerdown', (p, lx, ly, e) => { if (e) e.stopPropagation(); step(1); });
+        this.ui.push(lt, gt);
+      }
+      sy += 40;
+    }
+
+    if (isHost) {
+      const enough = st.players.length >= (st.settings ? st.settings.minPlayers : 1);
+      const startBtn = makePxButton(this, CANVAS_W / 2, 560,
+        'START GAME', enough ? () => this.sock.emit('startGame') : null,
+        enough ? undefined : `need ${st.settings.minPlayers}+ players`);
+      this.ui.push(startBtn);
+    } else {
+      this.ui.push(pxText(this, CANVAS_W / 2, 560, 'waiting for the host to start...', '20px', UI_SOFT));
+    }
+    this.ui.push(makePxButton(this, CANVAS_W / 2, 635, 'LEAVE', () => {
+      this.sock.emit('leaveRoom');
+      this.showConnect();
+    }));
+  }
+
+  makeDomInput(id, placeholder, topFrac) {
+    this.removeDomInput();
+    const el = document.createElement('input');
+    el.id = id;
+    el.placeholder = placeholder;
+    el.maxLength = 16;
+    el.value = this.nameSent || '';
+    Object.assign(el.style, {
+      position: 'absolute', left: '50%', top: (topFrac / CANVAS_H * 100) + '%',
+      transform: 'translateX(-50%)', width: '280px', padding: '10px',
+      fontFamily: 'Kenney Pixel, monospace', fontSize: '22px', textAlign: 'center',
+      background: '#233b1c', color: '#fff', border: '3px solid #6da24e',
+      outline: 'none', zIndex: 10,
+    });
+    document.body.appendChild(el);
+    this.domInput = el;
+    el.focus();
+  }
+
+  removeDomInput() {
+    if (this.domInput) { this.domInput.remove(); this.domInput = null; }
+  }
+
+  clearUi() {
+    for (const w of this.ui) w.destroy();
+    this.ui = [];
+    this.removeDomInput();
+  }
+
+  exitToMenu() {
+    if (this.sock) { this.sock.emit('leaveRoom'); }
+    this.scene.start('menu');
+  }
+
+  teardown() { this.removeDomInput(); }
+}
+
+// ---------------------------------------------------------------- settings
+class SettingsScene extends Phaser.Scene {
+  constructor() { super('settings'); }
+  create(data) {
+    this.from = (data && data.from) || 'menu';
+    if (this.from === 'menu') {
+      this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x22381c);
+    } else {
+      this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x000000, 0.6);
+    }
+    this.add.nineslice(CANVAS_W / 2, CANVAS_H / 2, 'pxpanel', 0, 170, 110, 6, 6, 6, 6)
+      .setScale(3).setTint(UI_PANEL_TINT);
+    pxText(this, CANVAS_W / 2, 200, 'SETTINGS', '48px', UI_HEAD);
+
+    this.makeVolumeRow(300, 'MUSIC', 'musicVol', (v) => {
+      const amb = this.sound.get('ambient');
+      if (amb) amb.setVolume(v);
+    });
+    this.makeVolumeRow(380, 'SFX', 'sfxVol', () => {
+      this.sound.play('click', { volume: this.registry.get('sfxVol') });
+    });
+
+    makePxButton(this, CANVAS_W / 2, 480, 'BACK', () => {
+      this.sound.play('click', { volume: sfxVol(this) });
+      if (this.from === 'menu') this.scene.start('menu');
+      else { this.scene.stop(); this.scene.launch('pause'); }
+    });
+  }
+
+  makeVolumeRow(y, label, key, onChange) {
+    pxText(this, CANVAS_W / 2 - 170, y, label, '30px', UI_TEXT);
+    this.add.rectangle(CANVAS_W / 2 + 30, y, 180, 14, 0x1e3016).setOrigin(0.5);
+    const fill = this.add.rectangle(CANVAS_W / 2 - 60, y, 180 * this.registry.get(key), 14, 0xa8e86e)
+      .setOrigin(0, 0.5);
+    const step = (d) => {
+      const v = Phaser.Math.Clamp(Math.round((this.registry.get(key) + d) * 10) / 10, 0, 1);
+      this.registry.set(key, v);
+      fill.width = 180 * v;
+      if (onChange) onChange(v);
+    };
+    const minus = pxText(this, CANVAS_W / 2 - 90, y, '-', '44px', UI_HEAD)
+      .setInteractive({ useHandCursor: true });
+    const plus = pxText(this, CANVAS_W / 2 + 150, y, '+', '44px', UI_HEAD)
+      .setInteractive({ useHandCursor: true });
+    minus.on('pointerdown', (p, lx, ly, e) => { if (e) e.stopPropagation(); step(-0.1); });
+    plus.on('pointerdown', (p, lx, ly, e) => { if (e) e.stopPropagation(); step(0.1); });
+  }
+}
+
+// ---------------------------------------------------------------- pause
+class PauseScene extends Phaser.Scene {
+  constructor() { super('pause'); }
+  create() {
+    this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x000000, 0.6);
+    this.add.nineslice(CANVAS_W / 2, CANVAS_H / 2, 'pxpanel', 0, 150, 105, 6, 6, 6, 6)
+      .setScale(3).setTint(UI_PANEL_TINT);
+    pxText(this, CANVAS_W / 2, 220, 'PAUSED', '48px', UI_HEAD);
+    makePxButton(this, CANVAS_W / 2, 310, 'RESUME', () => this.closeTo('resume'));
+    makePxButton(this, CANVAS_W / 2, 390, 'SETTINGS', () => {
+      this.scene.stop(); this.scene.launch('settings', { from: 'pause' });
+    });
+    makePxButton(this, CANVAS_W / 2, 470, 'MAIN MENU', () => this.closeTo('menu'));
+    this.input.keyboard.on('keydown-ESC', () => this.closeTo('resume'));
+  }
+  closeTo(where) {
+    this.sound.play('click', { volume: sfxVol(this) });
+    this.scene.stop();
+    if (where === 'resume') { this.scene.resume('jungle'); }
+    else {
+      const jungle = this.scene.get('jungle');
+      if (jungle && jungle.online && window.game.socket) {
+        window.game.socket.emit('leaveRoom');
+        window.game.socket.off();
+      }
+      this.sound.stopByKey('ambient');
+      this.scene.stop('jungle');
+      this.scene.start('menu');
+    }
+  }
+}
+
+// ---------------------------------------------------------------- jungle
+class JungleScene extends Phaser.Scene {
+  constructor() { super('jungle'); }
+
+  init(data) {
+    this.online = !!(data && data.online);
+    this.netData = this.online ? data.net : null;
+    this.sock = this.online ? window.game.socket : null;
+  }
+
+  create() {
+    this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H);
+    // theme + seed: server-dictated online (identical map on every client)
+    this.theme = this.online
+      ? (MAPS.find(m => m.name === this.netData.theme) || MAPS[0])
+      : MAPS[Math.floor(Math.random() * MAPS.length)];
+    this.rng = mulberry32(this.online ? this.netData.seed : (Math.random() * 0xffffffff) | 0);
+    this.cameras.main.setBackgroundColor(this.theme.bg);
+    this.colorCache = new Map();
+    this.groundGrid = Array.from({ length: Math.ceil(WORLD_H / TILE) },
+      () => new Array(Math.ceil(WORLD_W / TILE)).fill(this.theme.base));
+
+    this.bushes = [];          // ALL cover (trees, bushes, rocks) — no physics
+    this.buildTerrain();
+    this.buildFoliage();
+    this.drawZones();
+
+    // ---- round phases: GRACE (hiders hide, invisible to seekers) -> SEEK
+    this.phase = this.online ? this.netData.phase : 'GRACE';
+    this.phaseEndsAt = this.time.now + (this.online ? this.netData.phaseMs : GRACE_LEN);
+    this.roundOver = false;
+
+    // ---- entities
+    this.entities = [];
+    this.byId = new Map();
+    this.npcHiders = [];
+    this.npcSeekers = [];
+
+    if (this.online) {
+      // roster comes from the server; NPCs are indistinguishable from humans
+      for (const r of this.netData.roster) {
+        const e = this.spawnEntity(r.x, r.y, r.role, r.camo);
+        e.id = r.id; e.name = r.name;
+        e.netX = r.x; e.netY = r.y; e.netRot = 0; e.netMoving = false;
+        this.byId.set(r.id, e);
+        if (r.id === this.netData.yourId) { e.isLocal = true; e.name = 'YOU'; this.local = e; }
+      }
+      this.lastInputSent = 0;
+      this.bindGameSocket();
+    } else {
+      // Offline roster: YOU hiding + 6 NPC hiders + 3 NPC seekers
+      // (hunter + stalker active; a 2nd hunter wakes late in the round)
+      this.local = this.spawnEntity(HIDER_SPAWNS[0].x, HIDER_SPAWNS[0].y, 'hider', 'jungle');
+      this.local.isLocal = true;
+      this.local.name = 'YOU';
+
+      const namePool = Phaser.Utils.Array.Shuffle([...BOT_NAMES]);
+      const camoCycle = ['jungle', 'desert', 'urban'];
+      for (let i = 0; i < 6; i++) {
+        const sp = HIDER_SPAWNS[1 + i];
+        const h = this.spawnEntity(sp.x, sp.y, 'hider', camoCycle[i % 3]);
+        h.name = namePool.pop();
+        h.ai = { state: 'moving', target: this.pickHidingSpot({ initial: true }),
+          stuckCheck: { x: 0, y: 0, at: 0 }, relocateAt: 0, nextChirp: 0, crowdedSince: 0 };
+        this.npcHiders.push(h);
+      }
+      const mkSeeker = (ox, oy, advanced, dormant) => {
+        const k = this.spawnEntity(SEEKER_SPAWN.x + ox, SEEKER_SPAWN.y + oy, 'seeker', 'urban');
+        k.name = namePool.pop();
+        k.ai = this.freshSeekerAI(advanced);
+        k.ai.dormant = dormant;
+        this.npcSeekers.push(k);
+        return k;
+      };
+      mkSeeker(0, 0, false, false);      // hunter, on the prowl from SEEK start
+      mkSeeker(70, 40, true, false);     // stalker (advanced), same
+      mkSeeker(30, 90, false, true);     // late hunter: 45s left or <2 hiders
+    }
+
+    this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
+    this.cameras.main.startFollow(this.local.sprite, false, 0.1, 0.1);
+
+    // ---- shooting
+    this.paintballs = this.physics.add.group({ maxSize: 40 });
+    this.lastFired = 0;
+    this.lastBlend = -BLEND_COOLDOWN;
+    this.aimLine = this.add.graphics().setDepth(5000);
+    this.splats = [];
+    this.musicRate = MUSIC_BASE;
+
+    // ---- crosshair
+    this.crosshair = this.add.image(0, 0, 'crosshairs', 0)
+      .setScale(0.55).setDepth(1e6).setVisible(false).setAlpha(0.9);
+
+    // ---- strobe (SEEK phase only): heartbeat warning, then 0.8s reveal
+    this.strobeUntil = 0;
+    this.time.addEvent({ delay: STROBE_EVERY, loop: true, callback: () => {
+      if (this.phase !== 'SEEK' || this.roundOver) return;
+      this.sound.play('hit', { volume: sfxVol(this) * 0.5, rate: 0.4 });
+      this.time.delayedCall(280, () =>
+        this.sound.play('hit', { volume: sfxVol(this) * 0.4, rate: 0.35 }));
+      this.time.delayedCall(STROBE_WARN, () => {
+        this.strobeUntil = this.time.now + STROBE_LEN;
+      });
+    } });
+
+    // ---- input (mouse aim always works; touch controls appear on touch)
+    this.keys = this.input.keyboard.addKeys('W,A,S,D,UP,LEFT,DOWN,RIGHT');
+    this.input.keyboard.on('keydown-TAB', (e) => { e.preventDefault(); this.toggleRole(); });
+    this.input.keyboard.on('keydown-SPACE', () => this.snapBlend());
+    this.input.keyboard.on('keydown-C', () => this.chirp(this.local));
+    this.input.keyboard.on('keydown-ESC', () => this.openPause());
+    this.input.addPointer(2);
+    this.input.on('pointerdown', (p) => {
+      if (this.joyPointerId !== null && p.id === this.joyPointerId) return;
+      if (this.local.role !== 'seeker') return;
+      const wp = this.cameras.main.getWorldPoint(p.x, p.y);   // FRESH world coords
+      this.tryShoot(wp.x, wp.y);
+    });
+
+    // ---- HUD
+    const hudStyle = (size) => ({
+      fontFamily: 'Kenney Future', fontSize: size, color: '#ffffff',
+      stroke: '#000000', strokeThickness: 4,
+    });
+    this.hudPhase = this.add.text(CANVAS_W / 2, 14, 'GRACE PERIOD - HIDE!', hudStyle('26px'))
+      .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1e6);
+    this.hudTimer = this.add.text(CANVAS_W / 2, 48, '00:20', hudStyle('20px'))
+      .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1e6);
+    this.hudMap = this.add.text(CANVAS_W / 2, 76, this.theme.name, hudStyle('13px'))
+      .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1e6).setAlpha(0.75);
+    this.hudRole = this.add.text(16, 14, 'ROLE: HIDER', hudStyle('18px'))
+      .setScrollFactor(0).setDepth(1e6);
+    this.hudBlend = this.add.text(16, 42, '', hudStyle('14px'))
+      .setScrollFactor(0).setDepth(1e6);
+    this.hudChirps = this.add.text(16, 64, 'CHIRPS: 0', hudStyle('14px'))
+      .setScrollFactor(0).setDepth(1e6);
+    this.hudHint = this.add.text(16, CANVAS_H - 30, IS_TOUCH
+      ? 'joystick move · FIRE shoots/blends · CHIRP taunts · pause top-right'
+      : 'WASD move · SPACE blend · C chirp · click shoot (seeker) · TAB role · ESC pause',
+      hudStyle('14px')).setScrollFactor(0).setDepth(1e6);
+
+    // ---- pause button
+    const pauseScale = IS_TOUCH ? 1.1 : 0.7;
+    this.pauseBtn = this.add.image(CANVAS_W - 40, 40, 'icon_pause')
+      .setScrollFactor(0).setDepth(1e6).setScale(pauseScale).setAlpha(0.8)
+      .setInteractive({ useHandCursor: true });
+    this.pauseBtn.on('pointerdown', (p, lx, ly, e) => { if (e) e.stopPropagation(); });
+    this.pauseBtn.on('pointerup', (p, lx, ly, e) => {
+      if (e) e.stopPropagation();
+      this.openPause();
+    });
+
+    // ---- mobile controls
+    this.joyPointerId = null;
+    this.joyVec = { x: 0, y: 0 };
+    if (IS_TOUCH) this.buildTouchControls();
+
+    // ---- audio: Retro Beat at 0.8x — proximity drives the tempo
+    const existing = this.sound.get('ambient');
+    if (existing) existing.stop();
+    this.sound.play('ambient', {
+      loop: true, volume: this.registry.get('musicVol'), rate: MUSIC_BASE,
+    });
+
+    // ---- round-start role announcement
+    const roundNo = this.online ? this.netData.round : 1;
+    const totalRounds = this.online ? this.netData.rounds : 1;
+    const roleWord = this.local.role === 'seeker' ? 'SEEKING' : 'HIDING';
+    const banner = this.add.text(CANVAS_W / 2, CANVAS_H / 2 - 90,
+      `ROUND ${roundNo}${totalRounds > 1 ? '/' + totalRounds : ''}\nYOU ARE ${roleWord}`, {
+      fontFamily: 'Kenney Pixel', fontSize: '54px', align: 'center',
+      color: this.local.role === 'seeker' ? '#ffb060' : '#b6ff8e',
+      stroke: '#1c2b14', strokeThickness: 6,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(1.5e6);
+    this.tweens.add({ targets: banner, alpha: 0, delay: 2400, duration: 600,
+      onComplete: () => banner.destroy() });
+
+    // ---- mini-map (seekers NEVER see hider dots); sits top-right on touch
+    // so it doesn't collide with the FIRE/CHIRP buttons
+    this.miniMap = this.add.graphics().setScrollFactor(0).setDepth(1e6);
+    this.miniCfg = IS_TOUCH
+      ? { x: CANVAS_W - 176, y: 78, w: 160, h: 120 }
+      : { x: CANVAS_W - 176, y: CANVAS_H - 136, w: 160, h: 120 };
+  }
+
+  drawMiniMap() {
+    const g = this.miniMap, c = this.miniCfg;
+    const sx = c.w / WORLD_W, sy = c.h / WORLD_H;
+    g.clear();
+    g.fillStyle(0x102010, 0.55);
+    g.fillRect(c.x, c.y, c.w, c.h);
+    g.lineStyle(2, 0x6da24e, 0.8);
+    g.strokeRect(c.x, c.y, c.w, c.h);
+    const meHides = this.local.role === 'hider';
+    for (const ent of this.entities) {
+      if (ent.role === 'gone' || !ent.sprite.visible) continue;
+      let color = null;
+      if (ent.isLocal) color = 0xffffff;
+      else if (ent.role === 'seeker') color = 0xff8833;
+      else if (ent.role === 'hider' && meHides) color = 0x7ce86a;  // hiders only
+      if (color === null) continue;
+      g.fillStyle(color, 1);
+      g.fillCircle(c.x + ent.sprite.x * sx, c.y + ent.sprite.y * sy, ent.isLocal ? 3.2 : 2.4);
+    }
+  }
+
+  openPause() {
+    this.scene.pause();
+    this.scene.launch('pause');
+  }
+
+  // ---------- online: socket handlers ----------
+  bindGameSocket() {
+    const s = this.sock;
+    s.off();
+    s.on('worldUpdate', (data) => {
+      if (this.roundOver) return;
+      const present = new Set();
+      for (const [id, x, y, rot] of data.players) {
+        present.add(id);
+        const e = this.byId.get(id);
+        if (!e) continue;
+        const moved = Math.abs(x - e.netX) > 1.2 || Math.abs(y - e.netY) > 1.2;
+        e.netMoving = moved;
+        e.netX = x; e.netY = y; e.netRot = rot;
+        if (!e.isLocal) e.sprite.setVisible(true);
+      }
+      // absent = filtered out (I'm a blind seeker in grace) or gone
+      for (const e of this.entities) {
+        if (!e.isLocal && !present.has(e.id)) e.sprite.setVisible(false);
+      }
+    });
+    s.on('phaseChange', (d) => {
+      this.phase = d.phase;
+      this.phaseEndsAt = this.time.now + d.phaseMs;
+      this.hudPhase.setText(d.phase === 'SEEK' ? 'SEEK PHASE' : d.phase);
+      this.sound.play('hit', { volume: sfxVol(this) * 0.8, rate: 0.5 });
+    });
+    s.on('strobe', (d) => {
+      this.sound.play('hit', { volume: sfxVol(this) * 0.5, rate: 0.4 });
+      this.time.delayedCall(280, () =>
+        this.sound.play('hit', { volume: sfxVol(this) * 0.4, rate: 0.35 }));
+      this.time.delayedCall(d.warnMs, () => { this.strobeUntil = this.time.now + d.lenMs; });
+    });
+    s.on('shotFired', (d) => {
+      const shooter = this.byId.get(d.byId);
+      if (shooter && shooter.isLocal) return;      // own shots render locally
+      this.fireVisualBall(d.x, d.y, d.angle);
+    });
+    s.on('playerInfected', (d) => {
+      const e = this.byId.get(d.id);
+      if (e) this.infectNet(e);
+    });
+    s.on('chirped', (d) => {
+      const e = this.byId.get(d.id);
+      synthChirp(sfxVol(this) * 0.35);
+      this.spawnRing(d.x, d.y, 0xffee55, 90);
+      if (e) {
+        e.chirps++;
+        if (e.isLocal) this.hudChirps.setText('CHIRPS: ' + e.chirps);
+      }
+    });
+    s.on('blendSnapped', (d) => {
+      const e = this.byId.get(d.id);
+      if (!e || e.role !== 'hider') return;
+      e.stillTimer = 2000;
+      e.color = this.environmentColorAt(e.sprite.x, e.sprite.y);
+    });
+    s.on('hitRejected', () => { /* server said no — ball already popped locally */ });
+    s.on('playerLeft', (d) => {
+      const e = this.byId.get(d.id);
+      if (e) {
+        e.sprite.setVisible(false);
+        e.role = 'gone';
+      }
+    });
+    s.on('roundEnd', (d) => this.endRoundNet(d));
+    s.on('roundStart', (data) => {
+      this.scene.restart({ online: true, net: data });
+    });
+    s.on('matchEnd', () => { /* final table already shown by roundEnd(matchOver) */ });
+    s.on('disconnect', () => {
+      if (!this.roundOver) {
+        this.roundOver = true;
+        this.add.text(CANVAS_W / 2, CANVAS_H / 2, 'DISCONNECTED', {
+          fontFamily: 'Kenney Pixel', fontSize: '48px', color: '#ff6655',
+          stroke: '#000000', strokeThickness: 4,
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(3e6);
+        this.time.delayedCall(2000, () => this.scene.start('menu'));
+      }
+    });
+    this.events.once('shutdown', () => { if (this.sock) this.sock.off('worldUpdate'); });
+  }
+
+  // cosmetic paintball for remote/NPC shots — no hit logic, server decides
+  fireVisualBall(x, y, angle) {
+    const ball = this.paintballs.get(x, y, 'paintball');
+    if (!ball) return;
+    ball.enableBody(true, x + Math.cos(angle) * 34, y + Math.sin(angle) * 34, true, true);
+    ball.setScale(0.035).setTint(0xff6600).setDepth(5000);
+    ball.body.setCircle(ball.width / 2);
+    this.physics.velocityFromRotation(angle, PAINTBALL_SPEED, ball.body.velocity);
+    ball.spawnTime = this.time.now;
+    ball.cosmetic = true;
+    ball.shooter = null;
+    const d = Phaser.Math.Distance.Between(x, y, this.local.sprite.x, this.local.sprite.y);
+    this.sound.play('shoot', { volume: sfxVol(this) * Math.max(0.08, 0.6 - d / 1200) });
+  }
+
+  // server-declared infection: visuals + role flip, no local rule-keeping
+  infectNet(ent) {
+    if (ent.role !== 'hider') return;
+    ent.role = 'infected';
+    this.sound.play('hit', { volume: sfxVol(this) });
+    if (ent.strobeOverlay) ent.strobeOverlay.setVisible(false);
+    ent.sprite.setVisible(true);
+    this.tweens.add({
+      targets: ent.sprite, alpha: 1, duration: 100, yoyo: true, repeat: 5,
+      onComplete: () => {
+        ent.role = 'seeker';
+        this.applyRoleVisual(ent);
+        if (ent.isLocal) {
+          this.hudRole.setText('ROLE: SEEKER');
+          if (this.fireLabel) this.fireLabel.setText('FIRE');
+        }
+      },
+    });
+    const label = this.add.text(ent.sprite.x, ent.sprite.y - 44, 'FOUND!', {
+      fontFamily: 'Kenney Future', fontSize: '24px', color: '#ffee55',
+      stroke: '#000000', strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(1e6);
+    this.tweens.add({ targets: label, y: label.y - 34, alpha: 0, duration: 1500,
+      onComplete: () => label.destroy() });
+  }
+
+  endRoundNet(d) {
+    if (this.roundOver) return;
+    this.roundOver = true;
+    for (const e of this.entities) e.sprite.body.setVelocity(0, 0);
+    this.sound.play('click', { volume: sfxVol(this) });
+
+    this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x000000, 0.6)
+      .setScrollFactor(0).setDepth(2e6);
+    this.add.nineslice(CANVAS_W / 2, CANVAS_H / 2, 'pxpanel', 0, 200, 160, 6, 6, 6, 6)
+      .setScale(3).setScrollFactor(0).setDepth(2e6).setTint(UI_PANEL_TINT);
+    const px = (x, y, str, size, color) => this.add.text(x, y, str, {
+      fontFamily: 'Kenney Pixel', fontSize: size, color: color || UI_TEXT,
+      stroke: '#1c2b14', strokeThickness: 3,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(2e6 + 1);
+
+    const meId = this.netData.yourId;
+    const nm = (s2) => s2.id === meId ? 'YOU' : s2.name;
+    px(CANVAS_W / 2, 118, d.matchOver ? 'MATCH OVER'
+      : (d.winner === 'seekers' ? 'ALL HIDERS FOUND!' : 'HIDERS SURVIVED!'),
+      '46px', d.winner === 'seekers' ? '#ffb060' : '#b6ff8e');
+    px(CANVAS_W / 2, 160, `ROUND ${d.round}/${d.rounds} - ${this.theme.name}`, '24px', UI_HEAD);
+
+    const hiders = d.stats.filter(s2 => s2.startedAsHider)
+      .sort((a, b) => b.chirps - a.chirps || b.hideMs - a.hideMs);
+    px(CANVAS_W / 2 - 220, 198, 'HIDERS', '20px', UI_SOFT);
+    px(CANVAS_W / 2 - 40, 198, 'CHIRPS', '20px', UI_SOFT);
+    px(CANVAS_W / 2 + 60, 198, 'HID', '20px', UI_SOFT);
+    px(CANVAS_W / 2 + 170, 198, 'SCORE', '20px', UI_SOFT);
+    hiders.slice(0, 6).forEach((s2, i) => {
+      const y = 228 + i * 27;
+      const c = i === 0 && s2.chirps > 0 ? UI_HEAD : UI_TEXT;
+      const secs = s2.hideMs / 1000;
+      px(CANVAS_W / 2 - 220, y, nm(s2), '20px', c);
+      px(CANVAS_W / 2 - 40, y, String(s2.chirps), '20px', c);
+      px(CANVAS_W / 2 + 60, y, `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`, '20px', c);
+      px(CANVAS_W / 2 + 170, y, String(s2.score), '20px', c);
+    });
+
+    const seekers = d.stats.filter(s2 => s2.role === 'seeker' || s2.found > 0)
+      .sort((a, b) => b.found - a.found);
+    const seekY = 228 + Math.min(hiders.length, 6) * 27 + 16;
+    px(CANVAS_W / 2, seekY, 'SEEKERS - PLAYERS FOUND', '22px', '#ffb060');
+    seekers.slice(0, 5).forEach((s2, i) => {
+      const y = seekY + 30 + i * 25;
+      px(CANVAS_W / 2 - 120, y, nm(s2), '20px', i === 0 && s2.found > 0 ? '#ffb060' : UI_TEXT);
+      px(CANVAS_W / 2 + 120, y, String(s2.found), '20px', i === 0 && s2.found > 0 ? '#ffb060' : UI_TEXT);
+    });
+
+    const footY = seekY + 30 + Math.min(seekers.length, 5) * 25 + 30;
+    if (d.matchOver) {
+      const amHost = this.netData.hostId === this.netData.yourId;
+      if (amHost) {
+        makePxButton(this, CANVAS_W / 2 - 140, footY + 20, 'PLAY AGAIN', () => {
+          this.sock.emit('startGame');    // room is back in LOBBY server-side
+        });
+      } else {
+        px(CANVAS_W / 2 - 140, footY + 20, 'waiting for the host...', '20px', UI_SOFT);
+      }
+      makePxButton(this, CANVAS_W / 2 + 140, footY + 20, 'LEAVE ROOM', () => {
+        this.sock.emit('leaveRoom');
+        this.scene.start('online');
+      });
+    } else {
+      px(CANVAS_W / 2, footY, 'next round starting...', '22px', UI_SOFT);
+      // depleting countdown bar
+      const barW = 360;
+      this.add.rectangle(CANVAS_W / 2, footY + 30, barW, 12, 0x1e3016)
+        .setScrollFactor(0).setDepth(2e6 + 1);
+      const fill = this.add.rectangle(CANVAS_W / 2 - barW / 2, footY + 30, barW, 12, 0xa8e86e)
+        .setOrigin(0, 0.5).setScrollFactor(0).setDepth(2e6 + 2);
+      this.tweens.add({ targets: fill, width: 0, duration: d.nextInMs, ease: 'Linear' });
+    }
+  }
+
+  // ---------- touch controls ----------
+  buildTouchControls() {
+    const joyX = 130, joyY = CANVAS_H - 130;
+    this.add.image(joyX, joyY, 'joy_pad').setScrollFactor(0).setDepth(1e6).setAlpha(0.55).setScale(1.4);
+    this.joyNub = this.add.image(joyX, joyY, 'joy_nub').setScrollFactor(0).setDepth(1e6).setAlpha(0.75);
+    this.joyBase = { x: joyX, y: joyY, r: 58 };
+
+    const fireX = CANVAS_W - 110, fireY = CANVAS_H - 120;
+    this.fireBtn = this.add.image(fireX, fireY, 'joy_pad')
+      .setScrollFactor(0).setDepth(1e6).setAlpha(0.6).setScale(0.95)
+      .setInteractive({ useHandCursor: true });
+    this.fireLabel = this.add.text(fireX, fireY, 'BLEND', {
+      fontFamily: 'Kenney Future', fontSize: '18px', color: '#ffffff',
+      stroke: '#000000', strokeThickness: 3,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(1e6);
+    this.fireBtn.on('pointerdown', (p, lx, ly, e) => {
+      if (e) e.stopPropagation();
+      if (this.local.role === 'seeker') {
+        const a = this.local.sprite.rotation;
+        this.tryShoot(this.local.sprite.x + Math.cos(a) * 200,
+                      this.local.sprite.y + Math.sin(a) * 200);
+      } else {
+        this.snapBlend();
+      }
+    });
+
+    this.chirpBtn = this.add.image(fireX, fireY - 110, 'joy_pad')
+      .setScrollFactor(0).setDepth(1e6).setAlpha(0.5).setScale(0.6)
+      .setInteractive({ useHandCursor: true });
+    this.chirpLabel = this.add.text(fireX, fireY - 110, 'CHIRP', {
+      fontFamily: 'Kenney Future', fontSize: '14px', color: '#ffee88',
+      stroke: '#000000', strokeThickness: 3,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(1e6);
+    this.chirpBtn.on('pointerdown', (p, lx, ly, e) => {
+      if (e) e.stopPropagation();
+      this.chirp(this.local);
+    });
+
+    this.input.on('pointerdown', (p) => {
+      if (p.x < CANVAS_W / 2 && this.joyPointerId === null) this.joyPointerId = p.id;
+    });
+    this.input.on('pointerup', (p) => {
+      if (p.id === this.joyPointerId) {
+        this.joyPointerId = null;
+        this.joyVec.x = 0; this.joyVec.y = 0;
+        this.joyNub.setPosition(this.joyBase.x, this.joyBase.y);
+      }
+    });
+  }
+
+  updateJoystick() {
+    if (this.joyPointerId === null) return;
+    const p = [this.input.pointer1, this.input.pointer2, this.input.pointer3,
+               this.input.activePointer].find(pt => pt && pt.id === this.joyPointerId);
+    if (!p || !p.isDown) {
+      this.joyPointerId = null;
+      this.joyVec.x = 0; this.joyVec.y = 0;
+      this.joyNub.setPosition(this.joyBase.x, this.joyBase.y);
+      return;
+    }
+    const dx = p.x - this.joyBase.x, dy = p.y - this.joyBase.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const clamped = Math.min(len, this.joyBase.r);
+    this.joyVec.x = (dx / len) * (clamped / this.joyBase.r);
+    this.joyVec.y = (dy / len) * (clamped / this.joyBase.r);
+    this.joyNub.setPosition(this.joyBase.x + (dx / len) * clamped,
+                            this.joyBase.y + (dy / len) * clamped);
+  }
+
+  // ---------- entities ----------
+  spawnEntity(x, y, role, camoKey) {
+    const sprite = this.physics.add.image(x, y, 'player_stand');
+    sprite.body.setCircle(16, sprite.width / 2 - 16, sprite.height / 2 - 16);
+    sprite.setCollideWorldBounds(true);
+    sprite.setDepth(ENTITY_DEPTH);   // silhouettes always render above world art
+    const base = Phaser.Display.Color.IntegerToColor(CAMO[camoKey].tint);
+    const ent = { sprite, role, camoKey, stillTimer: 0, isLocal: false,
+      color: { r: base.red, g: base.green, b: base.blue }, strobeOverlay: null,
+      chirps: 0, hideMs: 0, found: 0, lastChirp: -CHIRP_COOLDOWN, name: 'PLAYER', ai: null,
+      startedAsHider: role === 'hider' };
+    this.applyRoleVisual(ent);
+    this.entities.push(ent);
+    return ent;
+  }
+
+  applyRoleVisual(ent) {
+    const s = ent.sprite;
+    if (ent.role === 'seeker') {
+      s.setTexture('seeker').setScale(3);
+      s.clearTint(); s.tintFill = false; s.setAlpha(1); s.setVisible(true);
+      s.body.setCircle(6, 1, 0);
+      if (ent.strobeOverlay) ent.strobeOverlay.setVisible(false);
+    } else {
+      s.setTexture('player_stand').setScale(1);
+      s.setTint(CAMO[ent.camoKey].tint);
+      s.body.setCircle(16, s.width / 2 - 16, s.height / 2 - 16);
+    }
+  }
+
+  toggleRole() {
+    if (this.online) return;              // roles are server-assigned online
+    this.local.role = this.local.role === 'hider' ? 'seeker' : 'hider';
+    this.applyRoleVisual(this.local);
+    this.hudRole.setText('ROLE: ' + this.local.role.toUpperCase());
+    if (this.fireLabel) this.fireLabel.setText(this.local.role === 'seeker' ? 'FIRE' : 'BLEND');
+    this.aimLine.clear();
+    this.sound.play('click', { volume: sfxVol(this) });
+  }
+
+  hidersLeft() {
+    return this.entities.filter(e => e.role === 'hider' || e.role === 'infected').length;
+  }
+
+  // ---------- NPC AI ----------
+  freshSeekerAI(advanced) {
+    return { advanced, target: null, targetUntil: 0, nextShot: 0, chirpLead: null,
+      chase: null, searchAt: null, searchUntil: 0, alert: null };
+  }
+
+  // Is this hider currently lit up by the strobe window?
+  isStrobing(ent) {
+    const s = ent.sprite;
+    const still = s.body.velocity.x === 0 && s.body.velocity.y === 0;
+    return still && ent.stillTimer > 900 && this.time.now < this.strobeUntil;
+  }
+
+  // Cover-seeking: hide next to real foliage, weighted toward the dense zones.
+  // opts.initial: round-start spots keep >=1000px from the seeker spawn corner
+  // opts.awayFrom: repositioning keeps >=300px from whoever crowded them
+  pickHidingSpot(opts) {
+    const initial = opts && opts.initial;
+    const awayFrom = opts && opts.awayFrom;
+    for (let tries = 0; tries < 40; tries++) {
+      const b = this.bushes[Math.floor(Math.random() * this.bushes.length)];
+      if (!b) break;
+      const zone = this.zoneAt(b.x, b.y);
+      const weight = (zone === 'A' || zone === 'C') ? 0.85 : 0.4;
+      if (Math.random() > weight) continue;
+      const spot = { x: b.x + (Math.random() - 0.5) * 30, y: b.y + (Math.random() - 0.5) * 30 };
+      if (spot.x < 50 || spot.x > WORLD_W - 50 || spot.y < 50 || spot.y > WORLD_H - 50) continue;
+      if (initial) {
+        // relax 1000 -> 700 if the map keeps refusing us
+        const minD = tries < 25 ? 1000 : 700;
+        if (Phaser.Math.Distance.Between(spot.x, spot.y, SEEKER_SPAWN.x, SEEKER_SPAWN.y) < minD) continue;
+      }
+      if (awayFrom &&
+          Phaser.Math.Distance.Between(spot.x, spot.y, awayFrom.x, awayFrom.y) < 300) continue;
+      const crowded = this.npcHiders && this.npcHiders.some(h =>
+        h.ai && h.ai.target && Phaser.Math.Distance.Between(spot.x, spot.y, h.ai.target.x, h.ai.target.y) < 90);
+      const nearHunter = this.npcSeekers && this.npcSeekers.some(k =>
+        Phaser.Math.Distance.Between(spot.x, spot.y, k.sprite.x, k.sprite.y) < 260);
+      if (crowded || nearHunter) continue;
+      return spot;
+    }
+    // fallback: far half of the map
+    return { x: WORLD_W / 2 + Math.random() * (WORLD_W / 2 - 200),
+             y: 150 + Math.random() * (WORLD_H - 300) };
+  }
+
+  npcHiderAI(ent, time, delta) {
+    if (ent.role !== 'hider') return;
+    const s = ent.sprite, ai = ent.ai;
+
+    if (ai.state === 'moving' && ai.target) {
+      const d = Phaser.Math.Distance.Between(s.x, s.y, ai.target.x, ai.target.y);
+      if (d < 10) {
+        ai.state = 'settled';
+        ai.target = null;
+        s.body.setVelocity(0, 0);
+        ent.stillTimer = 2000;                        // settle & blend quickly
+        ent.color = this.environmentColorAt(s.x, s.y);
+        ai.relocateAt = time + RELOCATE_MIN + Math.random() * (RELOCATE_MAX - RELOCATE_MIN);
+      } else {
+        const a = Phaser.Math.Angle.Between(s.x, s.y, ai.target.x, ai.target.y);
+        const speed = this.phase === 'GRACE' ? PLAYER_SPEED : PLAYER_SPEED * 0.75;
+        s.body.setVelocity(Math.cos(a) * speed, Math.sin(a) * speed);
+        s.rotation = a;
+        // unstick: if barely moving for a while, pick a different spot
+        if (time - ai.stuckCheck.at > 1200) {
+          if (Phaser.Math.Distance.Between(s.x, s.y, ai.stuckCheck.x, ai.stuckCheck.y) < 20) {
+            ai.target = this.pickHidingSpot();
+          }
+          ai.stuckCheck = { x: s.x, y: s.y, at: time };
+        }
+      }
+    } else if (ai.state === 'settled') {
+      s.body.setVelocity(0, 0);
+      // a human hider camping on top of us? give it 3-5s, then move away
+      const crowder = this.entities.find(e => e.isLocal && e.role === 'hider' &&
+        Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, s.x, s.y) < 40);
+      if (crowder) {
+        if (!ai.crowdedSince) {
+          ai.crowdedSince = time;
+          ai.crowdPatience = 3000 + Math.random() * 2000;
+        } else if (time - ai.crowdedSince > ai.crowdPatience) {
+          ai.crowdedSince = 0;
+          ai.state = 'moving';
+          ai.target = this.pickHidingSpot({ awayFrom: { x: crowder.sprite.x, y: crowder.sprite.y } });
+          return;
+        }
+      } else {
+        ai.crowdedSince = 0;
+      }
+      // periodic relocation until found or round ends (SEEK phase only)
+      if (this.phase === 'SEEK' && time >= ai.relocateAt) {
+        ai.state = 'moving';
+        ai.target = this.pickHidingSpot();
+      }
+      // occasional cheeky chirp while hidden
+      if (this.phase === 'SEEK') {
+        if (!ai.nextChirp) ai.nextChirp = time + 15000 + Math.random() * 25000;
+        if (time >= ai.nextChirp) {
+          this.chirp(ent);
+          ai.nextChirp = time + 15000 + Math.random() * 25000;
+        }
+      }
+    }
+  }
+
+  // A hider is "spottable" by AI if they're not fully blended right now.
+  isSpottable(ent) {
+    const s = ent.sprite;
+    const moving = s.body.velocity.x !== 0 || s.body.velocity.y !== 0;
+    const strobing = this.time.now < this.strobeUntil && !moving && ent.stillTimer > 900;
+    return moving || ent.stillTimer <= 900 || strobing;
+  }
+
+  npcSeekerAI(ent, time, delta) {
+    if (this.phase !== 'SEEK') {                     // frozen during grace
+      ent.sprite.body.setVelocity(0, 0);
+      return;
+    }
+    const s = ent.sprite, ai = ent.ai;
+    // late seeker: waits at spawn until the endgame trigger
+    if (ai.dormant) {
+      const hidersActive = this.entities.filter(e => e.role === 'hider').length;
+      const remaining = this.phaseEndsAt - time;
+      if (remaining <= LATE_SEEKER_TRIGGER_MS || hidersActive < LATE_SEEKER_MIN_HIDERS) {
+        ai.dormant = false;
+      } else {
+        s.body.setVelocity(0, 0);
+        return;
+      }
+    }
+    const detect = ai.advanced ? NPC_DETECT_ADV : NPC_DETECT;
+    const escape = ai.advanced ? NPC_ESCAPE_ADV : NPC_ESCAPE;
+    const shotMul = ai.advanced ? STALKER_SHOT_MUL : HUNTER_SHOT_MUL;
+
+    // ---- chase maintenance: locked-on pursuit of a specific hider
+    if (ai.chase) {
+      const t = ai.chase.target;
+      const d = Phaser.Math.Distance.Between(s.x, s.y, t.sprite.x, t.sprite.y);
+      const expired = time - ai.chase.since > CHASE_MAX;
+      if (t.role !== 'hider' || d > escape || expired) {
+        // lost them - the advanced NPC remembers where and searches that area
+        if (ai.advanced && t.role === 'hider') {
+          ai.searchAt = { x: t.sprite.x, y: t.sprite.y };
+          ai.searchUntil = time + 20000;
+        }
+        ai.chase = null;
+        ai.target = null;
+      } else {
+        const a = Phaser.Math.Angle.Between(s.x, s.y, t.sprite.x, t.sprite.y);
+        s.body.setVelocity(Math.cos(a) * CHASE_SPEED, Math.sin(a) * CHASE_SPEED);
+        s.rotation = a;
+        if (time >= ai.nextShot) {
+          ai.nextShot = time + CHASE_SHOT_EVERY * shotMul;
+          this.fireBallFrom(ent, t.sprite.x, t.sprite.y);
+        }
+        return;                                      // pursuit overrides patrol
+      }
+    }
+
+    // ---- chase acquisition: movement or strobing inside the notice radius
+    for (const h of this.entities) {
+      if (h.role !== 'hider') continue;
+      const d = Phaser.Math.Distance.Between(s.x, s.y, h.sprite.x, h.sprite.y);
+      if (d > detect) continue;
+      const moving = h.sprite.body.velocity.x !== 0 || h.sprite.body.velocity.y !== 0;
+      if (moving || this.isStrobing(h)) {
+        ai.chase = { target: h, since: time };
+        ai.nextShot = Math.min(ai.nextShot, time + 150);   // snap shot on acquisition
+        return;
+      }
+    }
+
+    // ---- patrol (chirps investigated, advanced NPC searches last-known areas)
+    if (ai.chirpLead) {
+      ai.target = ai.chirpLead;
+      ai.targetUntil = time + 9000;
+      ai.chirpLead = null;
+    }
+    if (!ai.target || time > ai.targetUntil ||
+        Phaser.Math.Distance.Between(s.x, s.y, ai.target.x, ai.target.y) < 14) {
+      if (ai.advanced && ai.searchAt && time < ai.searchUntil) {
+        // sweep the area where the target was lost
+        ai.target = { x: ai.searchAt.x + (Math.random() - 0.5) * 260,
+                      y: ai.searchAt.y + (Math.random() - 0.5) * 260 };
+      } else if (ai.advanced && Math.random() < 0.4) {
+        // "intuition": drift toward the nearest hider's general area
+        let nearest = null, best = 1e9;
+        for (const h of this.entities) {
+          if (h.role !== 'hider') continue;
+          const d = Phaser.Math.Distance.Between(s.x, s.y, h.sprite.x, h.sprite.y);
+          if (d < best) { best = d; nearest = h; }
+        }
+        ai.target = nearest
+          ? { x: nearest.sprite.x + (Math.random() - 0.5) * 500,
+              y: nearest.sprite.y + (Math.random() - 0.5) * 500 }
+          : { x: Math.random() * WORLD_W, y: Math.random() * WORLD_H };
+      } else {
+        const z = ZONES[Math.floor(Math.random() * ZONES.length)];
+        ai.target = Math.random() < 0.65
+          ? { x: z.rect[0] + Math.random() * z.rect[2], y: z.rect[1] + Math.random() * z.rect[3] }
+          : { x: 100 + Math.random() * (WORLD_W - 200), y: 100 + Math.random() * (WORLD_H - 200) };
+      }
+      ai.target.x = Phaser.Math.Clamp(ai.target.x, 60, WORLD_W - 60);
+      ai.target.y = Phaser.Math.Clamp(ai.target.y, 60, WORLD_H - 60);
+      ai.targetUntil = time + 9000;
+    }
+    const a = Phaser.Math.Angle.Between(s.x, s.y, ai.target.x, ai.target.y);
+    s.body.setVelocity(Math.cos(a) * PLAYER_SPEED * 0.8, Math.sin(a) * PLAYER_SPEED * 0.8);
+    s.rotation = a;
+
+    // shooting: aimed shots at spottable hiders, else area-checking potshots
+    if (time >= ai.nextShot) {
+      ai.nextShot = time + (1400 + Math.random() * 2200) * shotMul;
+      let target = null, bestD = 320;
+      for (const h of this.entities) {
+        if (h.role !== 'hider') continue;
+        const d = Phaser.Math.Distance.Between(s.x, s.y, h.sprite.x, h.sprite.y);
+        if (d < bestD && this.isSpottable(h)) { target = h; bestD = d; }
+      }
+      if (target) {
+        this.fireBallFrom(ent, target.sprite.x, target.sprite.y);
+        s.rotation = Phaser.Math.Angle.Between(s.x, s.y, target.sprite.x, target.sprite.y);
+      } else if (Math.random() < 0.55 * (ai.advanced ? 1.25 : 1.15)) {
+        const near = this.bushes.filter(b =>
+          Phaser.Math.Distance.Between(s.x, s.y, b.x, b.y) < 340);
+        const aimAt = near.length && Math.random() < 0.7
+          ? near[Math.floor(Math.random() * near.length)]
+          : { x: s.x + (Math.random() - 0.5) * 500, y: s.y + (Math.random() - 0.5) * 500 };
+        this.fireBallFrom(ent, aimAt.x, aimAt.y);
+      }
+    }
+  }
+
+  // ---------- chameleon ----------
+  zoneAt(x, y) {
+    for (const z of ZONES) {
+      const [zx, zy, zw, zh] = z.rect;
+      if (x >= zx && x <= zx + zw && y >= zy && y <= zy + zh) return z.id;
+    }
+    return null;
+  }
+
+  avgColor(key, frame) {
+    const cacheKey = key + '#' + (frame ?? '');
+    if (this.colorCache.has(cacheKey)) return this.colorCache.get(cacheKey);
+    const f = this.textures.getFrame(key, frame);
+    const cnv = document.createElement('canvas');
+    const w = Math.min(f.cutWidth, 64), h = Math.min(f.cutHeight, 64);
+    cnv.width = w; cnv.height = h;
+    const ctx = cnv.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(f.source.image, f.cutX, f.cutY, f.cutWidth, f.cutHeight, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] < 64) continue;
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+    }
+    const c = n ? { r: r / n, g: g / n, b: b / n } : { r: 128, g: 128, b: 128 };
+    this.colorCache.set(cacheKey, c);
+    return c;
+  }
+
+  environmentColorAt(x, y) {
+    let best = null, bestDist = 1e9;
+    for (const c of this.bushes) {
+      const d = Phaser.Math.Distance.Between(x, y, c.x, c.y);
+      if (d < Math.max(c.displayWidth, c.displayHeight) * 0.6 && d < bestDist) {
+        best = c; bestDist = d;
+      }
+    }
+    if (best) {
+      // themed maps tint their foliage — blend to the DISPLAYED color
+      const c = this.avgColor(best.texture.key);
+      if (best.isTinted && best.tintTopLeft !== 0xffffff) {
+        const t = Phaser.Display.Color.IntegerToColor(best.tintTopLeft);
+        return { r: c.r * t.red / 255, g: c.g * t.green / 255, b: c.b * t.blue / 255 };
+      }
+      return c;
+    }
+    const tx = Phaser.Math.Clamp(Math.floor(x / TILE), 0, this.groundGrid[0].length - 1);
+    const ty = Phaser.Math.Clamp(Math.floor(y / TILE), 0, this.groundGrid.length - 1);
+    return this.avgColor('tiles', this.groundGrid[ty][tx]);
+  }
+
+  applyChameleon(ent, delta) {
+    const s = ent.sprite;
+    // online remotes have no local velocity — stillness derives from net positions
+    const moving = (this.online && !ent.isLocal)
+      ? ent.netMoving
+      : (s.body.velocity.x !== 0 || s.body.velocity.y !== 0);
+    ent.stillTimer = moving ? 0 : ent.stillTimer + delta;
+
+    let target;
+    if (!moving && ent.stillTimer > 250) {
+      target = this.environmentColorAt(s.x, s.y);
+    } else {
+      const t = Phaser.Display.Color.IntegerToColor(CAMO[ent.camoKey].tint);
+      target = { r: t.red, g: t.green, b: t.blue };
+    }
+    const rate = moving ? 0.018 : 0.003;
+    const k = 1 - Math.exp(-delta * rate);
+    ent.color.r += (target.r - ent.color.r) * k;
+    ent.color.g += (target.g - ent.color.g) * k;
+    ent.color.b += (target.b - ent.color.b) * k;
+    const tint = Phaser.Display.Color.GetColor(
+      Math.round(ent.color.r), Math.round(ent.color.g), Math.round(ent.color.b));
+    const settled = !moving && ent.stillTimer > 900;
+    if (settled) s.setTintFill(tint); else s.setTint(tint);
+    s.alpha = 1;
+
+    const strobing = this.phase === 'SEEK' && settled && this.time.now < this.strobeUntil;
+    if (strobing && !ent.strobeOverlay) {
+      ent.strobeOverlay = this.add.tileSprite(s.x, s.y, s.width * 1.6, s.height * 1.6, 'pattern29')
+        .setDepth(s.depth + 1).setAlpha(0.9).setTileScale(0.18);
+      ent.strobeOverlay.setMask(new Phaser.Display.Masks.BitmapMask(this, s));
+    }
+    if (ent.strobeOverlay) {
+      const show = strobing && s.visible;
+      ent.strobeOverlay.setVisible(show);
+      if (show) {
+        ent.strobeOverlay.setPosition(s.x, s.y).setDepth(s.depth + 1);
+        ent.strobeOverlay.tilePositionX += delta * 0.03;
+      }
+    }
+  }
+
+  snapBlend() {
+    const ent = this.local;
+    if (ent.role !== 'hider' || this.roundOver) return;
+    const now = this.time.now;
+    if (now - this.lastBlend < BLEND_COOLDOWN) return;
+    const s = ent.sprite;
+    if (s.body.velocity.x !== 0 || s.body.velocity.y !== 0) return;
+    this.lastBlend = now;
+    ent.stillTimer = 2000;
+    ent.color = this.environmentColorAt(s.x, s.y);
+    this.sound.play('click', { volume: sfxVol(this) * 0.6 });
+    if (this.online) this.sock.emit('blendSnap');   // so other clients snap you too
+  }
+
+  // ---------- splats / rings / chirps ----------
+  addSplat(x, y) {
+    const s = this.add.image(x, y, 'splat' + Math.floor(Math.random() * 3))
+      .setScale(0.18 + Math.random() * 0.1)
+      .setRotation(Math.random() * Math.PI * 2)
+      .setTint(0xff6600).setAlpha(0.85).setDepth(-45);
+    this.splats.push(s);
+    if (this.splats.length > MAX_SPLATS) {
+      const old = this.splats.shift();
+      this.tweens.add({ targets: old, alpha: 0, duration: 800, onComplete: () => old.destroy() });
+    }
+  }
+
+  spawnRing(x, y, color, maxR) {
+    const g = this.add.graphics().setDepth(9000);
+    const state = { r: 12 };
+    this.tweens.add({
+      targets: state, r: maxR, duration: 700, ease: 'Sine.easeOut',
+      onUpdate: () => {
+        g.clear();
+        g.lineStyle(3, color, 1 - state.r / maxR);
+        g.strokeCircle(x, y, state.r);
+      },
+      onComplete: () => g.destroy(),
+    });
+  }
+
+  chirp(ent) {
+    const now = this.time.now;
+    if (ent.role !== 'hider' || this.roundOver || this.phase !== 'SEEK') return;
+    if (this.online) {
+      // server validates + broadcasts; visuals arrive via the 'chirped' event
+      if (ent.isLocal) this.sock.emit('chirp');
+      return;
+    }
+    if (now - (ent.lastChirp || -CHIRP_COOLDOWN) < CHIRP_COOLDOWN) return;
+    ent.lastChirp = now;
+    ent.chirps++;
+    synthChirp(sfxVol(this) * 0.35);
+    this.spawnRing(ent.sprite.x, ent.sprite.y, 0xffee55, 90);
+    // NPC seekers heard that: close ones lock on, far ones come investigate
+    for (const k of this.npcSeekers) {
+      if (k.role !== 'seeker' || k.isLocal) continue;
+      const d = Phaser.Math.Distance.Between(
+        k.sprite.x, k.sprite.y, ent.sprite.x, ent.sprite.y);
+      const detect = k.ai.advanced ? NPC_DETECT_ADV : NPC_DETECT;
+      if (d <= detect && this.phase === 'SEEK') {
+        k.ai.chase = { target: ent, since: this.time.now };
+      } else {
+        k.ai.chirpLead = { x: ent.sprite.x, y: ent.sprite.y };
+      }
+    }
+    if (ent.isLocal) this.hudChirps.setText('CHIRPS: ' + ent.chirps);
+  }
+
+  // ---------- shooting / infection ----------
+  tryShoot(wx, wy) {
+    if (this.local.role !== 'seeker' || this.phase !== 'SEEK' || this.roundOver) return;
+    if (this.time.now - this.lastFired < FIRE_COOLDOWN) return;
+    this.lastFired = this.time.now;
+    this.fireBallFrom(this.local, wx, wy);
+    if (this.online) {
+      const p = this.local.sprite;
+      this.sock.emit('shotFired', { angle: Phaser.Math.Angle.Between(p.x, p.y, wx, wy) });
+    }
+  }
+
+  fireBallFrom(ent, wx, wy) {
+    const p = ent.sprite;
+    const angle = Phaser.Math.Angle.Between(p.x, p.y, wx, wy);
+    const ball = this.paintballs.get(p.x, p.y, 'paintball');
+    if (!ball) return;
+    ball.enableBody(true, p.x + Math.cos(angle) * 34, p.y + Math.sin(angle) * 34, true, true);
+    ball.setScale(0.035).setTint(0xff6600).setDepth(5000);
+    ball.body.setCircle(ball.width / 2);
+    this.physics.velocityFromRotation(angle, PAINTBALL_SPEED, ball.body.velocity);
+    ball.spawnTime = this.time.now;
+    ball.shooter = ent;                              // credit "found" to the shooter
+    const dist = Phaser.Math.Distance.Between(p.x, p.y, this.local.sprite.x, this.local.sprite.y);
+    const vol = ent.isLocal ? 0.7 : Math.max(0.1, 0.6 - dist / 1200);
+    this.sound.play('shoot', { volume: sfxVol(this) * vol });
+  }
+
+  popPaintball(ball, silent) {
+    if (!ball.active) return;
+    if (!silent) this.sound.play('hit', { volume: sfxVol(this) });
+    this.addSplat(ball.x, ball.y);
+    this.paintballs.killAndHide(ball);
+    ball.body.stop();
+    ball.body.enable = false;
+  }
+
+  infect(ent) {
+    if (ent.role !== 'hider') return;
+    if (this.phase !== 'SEEK') return;   // grace/roundend shots can never infect
+    ent.role = 'infected';
+    this.sound.play('hit', { volume: sfxVol(this) });
+    if (ent.strobeOverlay) ent.strobeOverlay.setVisible(false);
+    ent.sprite.setVisible(true);
+    this.tweens.add({
+      targets: ent.sprite, alpha: 1, duration: 100, yoyo: true, repeat: 5,
+      onComplete: () => {
+        ent.role = 'seeker';
+        this.applyRoleVisual(ent);
+        if (ent.isLocal) {
+          this.hudRole.setText('ROLE: SEEKER');
+          if (this.fireLabel) this.fireLabel.setText('FIRE');
+        } else {
+          // converted NPC hider joins the hunt
+          ent.ai = this.freshSeekerAI(false);
+          ent.ai.nextShot = this.time.now + 2000;
+          this.npcSeekers.push(ent);
+          const idx = this.npcHiders.indexOf(ent);
+          if (idx >= 0) this.npcHiders.splice(idx, 1);
+        }
+        if (this.hidersLeft() === 0) this.endRound('seekers');
+      },
+    });
+    const label = this.add.text(ent.sprite.x, ent.sprite.y - 44, 'FOUND!', {
+      fontFamily: 'Kenney Future', fontSize: '24px', color: '#ffee55',
+      stroke: '#000000', strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(1e6);
+    this.tweens.add({ targets: label, y: label.y - 34, alpha: 0, duration: 1500,
+      onComplete: () => label.destroy() });
+  }
+
+  // ---------- world ----------
+  buildTerrain() {
+    const th = this.theme;
+    this.add.tileSprite(WORLD_W / 2, WORLD_H / 2, WORLD_W, WORLD_H, 'tiles', th.base).setDepth(-100);
+    const rng = this.rng;
+    const paint = (tx, ty, f, depth) => {
+      this.add.image(tx * TILE + TILE / 2, ty * TILE + TILE / 2, 'tiles', f).setDepth(depth);
+      if (this.groundGrid[ty] && this.groundGrid[ty][tx] !== undefined) this.groundGrid[ty][tx] = f;
+    };
+    for (let i = 0; i < 260; i++) {
+      const f = th.patches[Math.floor(rng() * th.patches.length)];
+      paint(Math.floor(rng() * WORLD_W / TILE), Math.floor(rng() * WORLD_H / TILE), f, -99);
+    }
+    for (let tx = Math.floor(600 / TILE); tx <= Math.floor(1400 / TILE); tx++) {
+      for (let ty = Math.floor(750 / TILE); ty <= Math.floor(1050 / TILE); ty++) {
+        const f = rng() < 0.75
+          ? th.band.mostly[Math.floor(rng() * th.band.mostly.length)]
+          : th.band.rest[Math.floor(rng() * th.band.rest.length)];
+        paint(tx, ty, f, -98);
+      }
+    }
+    for (let tx = Math.floor(640 / TILE); tx <= Math.floor(1360 / TILE); tx++) {
+      paint(tx, Math.floor(880 / TILE), th.water[Math.floor(this.rng() * th.water.length)], -97);
+    }
+  }
+
+  buildFoliage() {
+    const rng = this.rng;
+    const th = this.theme;
+    const clearings = [...HIDER_SPAWNS, SEEKER_SPAWN];
+    // Scenery has NO physics bodies — nothing can snag players or NPCs.
+    const addCover = (x, y, key, tint) => {
+      const img = this.add.image(x, y, key).setDepth(y);
+      if (tint) img.setTint(tint);
+      this.bushes.push(img);
+      return img;
+    };
+    const clusterAt = (cx, cy, big, spread) => {
+      const n = 3 + Math.floor(rng() * 4);
+      for (let i = 0; i < n; i++) {
+        const x = cx + (rng() - 0.5) * spread;
+        const y = cy + (rng() - 0.5) * spread;
+        if (x < 40 || x > WORLD_W - 40 || y < 40 || y > WORLD_H - 40) continue;
+        if (clearings.some(c => Phaser.Math.Distance.Between(x, y, c.x, c.y) < 110)) continue;
+        if (big && rng() < 0.55) {
+          const key = 'f' + (rng() < 0.5
+            ? TREES_TRUNK[Math.floor(rng() * TREES_TRUNK.length)]
+            : TREES_CANOPY[Math.floor(rng() * TREES_CANOPY.length)]);
+          addCover(x, y, key, th.treeTint);
+        } else {
+          const key = 'f' + BUSHES[Math.floor(rng() * BUSHES.length)];
+          addCover(x, y, key, th.bushTint);
+        }
+      }
+    };
+    for (let i = 0; i < 26; i++) clusterAt(200 + rng() * 700, 150 + rng() * 620, true, 240);
+    for (let i = 0; i < 16; i++) clusterAt(1550 + rng() * 700, 250 + rng() * 700, true, 260);
+    for (let i = 0; i < 30; i++) clusterAt(rng() * WORLD_W, rng() * WORLD_H, true, 300);
+    for (let i = 0; i < 5; i++) clusterAt(1200 + rng() * 700, 1200 + rng() * 400, false, 320);
+    for (let i = 0; i < 14; i++) {
+      const x = 620 + rng() * 760, y = 760 + rng() * 280;
+      addCover(x, y, 'f' + ROCKS[Math.floor(rng() * ROCKS.length)], null);
+    }
+    for (let i = 0; i < 120; i++) {
+      const t = this.add.image(rng() * WORLD_W, rng() * WORLD_H,
+        'f' + TUFTS[Math.floor(rng() * TUFTS.length)]).setDepth(-50);
+      if (th.tuftTint) t.setTint(th.tuftTint);
+    }
+  }
+
+  drawZones() {
+    const g = this.add.graphics().setDepth(-60);
+    for (const z of ZONES) {
+      g.fillStyle(z.color, 0.08);
+      g.fillRect(...z.rect);
+    }
+  }
+
+  // ---------- round end / scoreboard ----------
+  endRound(winner) {
+    if (this.roundOver) return;
+    this.roundOver = true;
+    for (const e of this.entities) e.sprite.body.setVelocity(0, 0);
+    this.sound.play('click', { volume: sfxVol(this) });
+
+    this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x000000, 0.6)
+      .setScrollFactor(0).setDepth(2e6);
+    this.add.nineslice(CANVAS_W / 2, CANVAS_H / 2, 'pxpanel', 0, 200, 178, 6, 6, 6, 6)
+      .setScale(3).setScrollFactor(0).setDepth(2e6).setTint(UI_PANEL_TINT);
+    const px = (x, y, str, size, color) => this.add.text(x, y, str, {
+      fontFamily: 'Kenney Pixel', fontSize: size, color: color || UI_TEXT,
+      stroke: '#1c2b14', strokeThickness: 3,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(2e6 + 1);
+
+    px(CANVAS_W / 2, 116, winner === 'seekers' ? 'ALL HIDERS FOUND!' : 'HIDERS SURVIVED!',
+      '42px', winner === 'seekers' ? '#ffb060' : '#b6ff8e');
+    px(CANVAS_W / 2, 154, `CHIRP CHAMPIONS - ${this.theme.name}`, '24px', UI_HEAD);
+
+    const rows = this.entities.filter(e => e.startedAsHider)
+      .map(e => {
+        const secs = Math.max(1, e.hideMs / 1000);
+        return { name: e.name, chirps: e.chirps, secs, rate: e.chirps / (secs / 60) };
+      }).sort((a, b) => b.chirps - a.chirps || b.rate - a.rate);
+
+    px(CANVAS_W / 2 - 200, 186, 'NAME', '19px', UI_SOFT);
+    px(CANVAS_W / 2 + 20, 186, 'CHIRPS', '19px', UI_SOFT);
+    px(CANVAS_W / 2 + 130, 186, 'HID', '19px', UI_SOFT);
+    px(CANVAS_W / 2 + 255, 186, 'CHIRPS/MIN', '19px', UI_SOFT);
+    rows.slice(0, 7).forEach((r, i) => {
+      const y = 212 + i * 25;
+      const c = i === 0 ? UI_HEAD : UI_TEXT;
+      const mm = Math.floor(r.secs / 60), ss = Math.floor(r.secs % 60);
+      px(CANVAS_W / 2 - 200, y, (i === 0 && r.chirps > 0 ? '* ' : '') + r.name, '20px', c);
+      px(CANVAS_W / 2 + 20, y, String(r.chirps), '20px', c);
+      px(CANVAS_W / 2 + 130, y, `${mm}:${String(ss).padStart(2, '0')}`, '20px', c);
+      px(CANVAS_W / 2 + 255, y, r.rate.toFixed(1), '20px', c);
+    });
+
+    // seekers score on players found (includes converted hiders and the local
+    // player if they ended the round seeking)
+    const seekY = 212 + Math.min(rows.length, 7) * 25 + 16;
+    px(CANVAS_W / 2, seekY, 'SEEKERS - PLAYERS FOUND', '22px', '#ffb060');
+    const seekRows = this.entities.filter(e => e.role === 'seeker' || e.found > 0)
+      .sort((a, b) => b.found - a.found);
+    seekRows.slice(0, 5).forEach((e, i) => {
+      const y = seekY + 28 + i * 24;
+      const c = i === 0 && e.found > 0 ? '#ffb060' : UI_TEXT;
+      px(CANVAS_W / 2 - 120, y, e.name, '20px', c);
+      px(CANVAS_W / 2 + 120, y, String(e.found), '20px', c);
+    });
+
+    const btnY = seekY + 28 + Math.min(seekRows.length, 5) * 24 + 36;
+    makePxButton(this, CANVAS_W / 2 - 130, btnY, 'PLAY AGAIN', () => {
+      this.sound.stopByKey('ambient');
+      this.scene.restart();
+    });
+    makePxButton(this, CANVAS_W / 2 + 130, btnY, 'MAIN MENU', () => {
+      this.sound.stopByKey('ambient');
+      this.scene.start('menu');
+    });
+  }
+
+  // ---------- frame loop ----------
+  update(time, delta) {
+    const me = this.local;
+    if (this.roundOver || !me) return;
+
+    if (this.online) {
+      // remote entities glide toward server positions; stillness comes from
+      // the same positions, so every client computes identical blends
+      for (const ent of this.entities) {
+        if (ent.role === 'gone') continue;
+        const s = ent.sprite;
+        if (ent.isLocal) {
+          // client prediction + soft server correction
+          const err = Phaser.Math.Distance.Between(s.x, s.y, ent.netX, ent.netY);
+          if (err > 120) s.setPosition(ent.netX, ent.netY);
+          else if (err > 8) s.setPosition(
+            s.x + (ent.netX - s.x) * 0.12, s.y + (ent.netY - s.y) * 0.12);
+        } else {
+          s.setPosition(s.x + (ent.netX - s.x) * 0.3, s.y + (ent.netY - s.y) * 0.3);
+          if (ent.role === 'seeker') s.rotation = ent.netRot;
+          else if (ent.netMoving) s.rotation = ent.netRot;
+          ent.netStill = ent.netMoving ? 0 : (ent.netStill || 0) + delta;
+        }
+      }
+    } else {
+      // ---- phase transition (offline only; the server drives it online)
+      if (this.phase === 'GRACE' && time >= this.phaseEndsAt) {
+        this.phase = 'SEEK';
+        this.phaseEndsAt = time + SEEK_LEN;
+        this.hudPhase.setText('SEEK PHASE');
+        this.sound.play('hit', { volume: sfxVol(this) * 0.8, rate: 0.5 });
+      }
+      if (this.phase === 'SEEK') {
+        for (const ent of this.entities) {
+          if (ent.role === 'hider') ent.hideMs += delta;
+        }
+      }
+      // ---- NPC brains (offline only)
+      for (const h of this.npcHiders) this.npcHiderAI(h, time, delta);
+      for (const k of this.npcSeekers) if (!k.isLocal) this.npcSeekerAI(k, time, delta);
+    }
+
+    // ---- local movement (seekers are frozen during grace)
+    this.updateJoystick();
+    const k = this.keys;
+    let dx = (k.A.isDown || k.LEFT.isDown ? -1 : 0) + (k.D.isDown || k.RIGHT.isDown ? 1 : 0);
+    let dy = (k.W.isDown || k.UP.isDown ? -1 : 0) + (k.S.isDown || k.DOWN.isDown ? 1 : 0);
+    if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
+    if (Math.hypot(this.joyVec.x, this.joyVec.y) > 0.18) {
+      dx = this.joyVec.x; dy = this.joyVec.y;
+    }
+    const frozen = me.role === 'seeker' && this.phase === 'GRACE';
+    me.sprite.body.setVelocity(frozen ? 0 : dx * PLAYER_SPEED, frozen ? 0 : dy * PLAYER_SPEED);
+
+    // online: stream input to the authoritative server every 50ms
+    if (this.online && time - this.lastInputSent >= 50) {
+      this.lastInputSent = time;
+      this.sock.emit('inputUpdate', {
+        dx: frozen ? 0 : dx, dy: frozen ? 0 : dy,
+        rot: me.role === 'seeker' ? me.sprite.rotation : undefined,
+      });
+    }
+
+    // ---- facing + crosshair (fresh world coords every frame — stale-aim fix)
+    if (me.role === 'seeker') {
+      if (IS_TOUCH && this.joyPointerId !== null) {
+        if (dx || dy) me.sprite.rotation = Math.atan2(dy, dx);
+        this.crosshair.setVisible(true).setPosition(
+          me.sprite.x + Math.cos(me.sprite.rotation) * 170,
+          me.sprite.y + Math.sin(me.sprite.rotation) * 170);
+      } else {
+        const p = this.input.activePointer;
+        const wp = this.cameras.main.getWorldPoint(p.x, p.y);
+        me.sprite.rotation = Phaser.Math.Angle.Between(me.sprite.x, me.sprite.y, wp.x, wp.y);
+        this.crosshair.setVisible(true).setPosition(wp.x, wp.y);
+      }
+      this.game.canvas.style.cursor = 'none';
+    } else {
+      if (dx || dy) me.sprite.rotation = Math.atan2(dy, dx);
+      this.crosshair.setVisible(false);
+      this.game.canvas.style.cursor = 'default';
+    }
+    // (entities keep their fixed ENTITY_DEPTH — always above trees/bushes)
+
+    // ---- chameleon for all hiders
+    for (const ent of this.entities) {
+      if (ent.role === 'hider') this.applyChameleon(ent, delta);
+    }
+
+    // ---- grace-period fog: seekers see NO trace of hiders
+    // (online: the server simply never sends hider positions to blind seekers)
+    if (!this.online) {
+      const seekerBlind = me.role === 'seeker' && this.phase === 'GRACE';
+      for (const ent of this.entities) {
+        if (ent.role === 'hider' && !ent.isLocal) {
+          ent.sprite.setVisible(!seekerBlind);
+          if (ent.strobeOverlay && seekerBlind) ent.strobeOverlay.setVisible(false);
+        }
+      }
+    }
+
+    // ---- aim line
+    this.aimLine.clear();
+    if (me.role === 'seeker' && this.phase === 'SEEK') {
+      const a = me.sprite.rotation;
+      this.aimLine.lineStyle(2, 0xffffff, 0.4);
+      this.aimLine.lineBetween(me.sprite.x, me.sprite.y,
+        me.sprite.x + Math.cos(a) * 180, me.sprite.y + Math.sin(a) * 180);
+    }
+
+    // ---- blend cooldown HUD
+    if (me.role === 'hider') {
+      const left = BLEND_COOLDOWN - (time - this.lastBlend);
+      this.hudBlend.setText(left <= 0 ? 'BLEND READY' : `BLEND ${(left / 1000).toFixed(1)}s`);
+      this.hudBlend.setColor(left <= 0 ? '#a8ffa0' : '#cccccc');
+      if (this.fireBtn) this.fireBtn.setAlpha(left <= 0 ? 0.6 : 0.25);
+    } else {
+      this.hudBlend.setText(this.phase === 'GRACE' ? 'HIDERS ARE HIDING...' : '');
+      if (this.fireBtn) this.fireBtn.setAlpha(0.6);
+    }
+
+    // ---- proximity music (replaces noise pings): tempo = danger.
+    // Distance from the local player to the nearest OPPOSING role drives the
+    // rate. Gated to SEEK so grace-period music can't leak hider positions.
+    let targetRate = MUSIC_BASE;
+    if (this.phase === 'SEEK') {
+      const opposing = me.role === 'seeker' ? 'hider' : 'seeker';
+      let nearest = Infinity;
+      for (const ent of this.entities) {
+        if (ent.role !== opposing || ent === me) continue;
+        const d = Phaser.Math.Distance.Between(
+          me.sprite.x, me.sprite.y, ent.sprite.x, ent.sprite.y);
+        if (d < nearest) nearest = d;
+      }
+      if (nearest <= CLOSE_RADIUS) targetRate = MUSIC_CLOSE;
+      else if (nearest <= NEAR_RADIUS) targetRate = MUSIC_NEAR;
+    }
+    // ease the tempo shift so it swells rather than jumps
+    this.musicRate += (targetRate - this.musicRate) * Math.min(1, delta * 0.004);
+    const amb = this.sound.get('ambient');
+    if (amb) amb.setRate(this.musicRate);
+
+    // ---- paintballs: TTL + hit checks (hiders only; balls fly over foliage;
+    //      NOTHING can be infected outside the SEEK phase)
+    for (const ball of this.paintballs.getMatching('active', true)) {
+      if (time - ball.spawnTime > PAINTBALL_TTL) { this.popPaintball(ball, true); continue; }
+      if (ball.cosmetic) continue;                 // remote shots: server decides hits
+      if (this.phase !== 'SEEK') continue;         // grace: balls are harmless
+      for (const ent of this.entities) {
+        if (ent.role !== 'hider') continue;
+        if (Phaser.Math.Distance.Between(ball.x, ball.y, ent.sprite.x, ent.sprite.y) < 28) {
+          this.popPaintball(ball);
+          if (this.online) {
+            // claim the hit; the server validates against ITS positions
+            this.sock.emit('shootHit', { targetId: ent.id, x: ball.x, y: ball.y });
+          } else {
+            if (ball.shooter && ball.shooter.role === 'seeker') ball.shooter.found++;
+            this.infect(ent);
+          }
+          break;
+        }
+      }
+    }
+
+    this.drawMiniMap();
+
+    // ---- HUD timer + round end
+    const remain = Math.max(0, this.phaseEndsAt - time);
+    const mm = String(Math.floor(remain / 60000)).padStart(2, '0');
+    const ss = String(Math.floor(remain % 60000 / 1000)).padStart(2, '0');
+    this.hudTimer.setText(`${mm}:${ss}`);
+    if (this.phase === 'SEEK' && remain <= 0) this.endRound('hiders');
+  }
+}
+
+// ---------------------------------------------------------------- boot it
+if (location.protocol === 'file:') {
+  document.body.innerHTML =
+    '<div style="color:#fff;font-family:sans-serif;max-width:640px;margin:80px auto;line-height:1.6">' +
+    '<h2>Open this game through the local server, not by double-clicking the file</h2>' +
+    '<p>Browsers block games loaded from <code>file://</code> from reading their image and audio files.</p>' +
+    '<pre style="background:#333;padding:12px">cd client\npython -m http.server 8123</pre>' +
+    '<p>then open <a style="color:#6cf" href="http://localhost:8123">http://localhost:8123</a></p></div>';
+  throw new Error('file:// protocol — serve over HTTP instead');
+}
+
+Promise.all([
+  document.fonts.load('16px "Kenney Future"'),
+  document.fonts.load('16px "Kenney Pixel"'),
+]).then(() => {
+  window.game = new Phaser.Game({
+    type: Phaser.AUTO,
+    parent: 'game',
+    width: CANVAS_W,
+    height: CANVAS_H,
+    backgroundColor: '#2d4a26',
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+    physics: { default: 'arcade', arcade: { debug: false } },
+    scene: [BootScene, MenuScene, OnlineScene, SettingsScene, PauseScene, JungleScene],
+  });
+});
+</script>
+</body>
+</html>
