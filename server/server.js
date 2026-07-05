@@ -58,6 +58,21 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
+// With 3+ NPC seekers, one walks the perimeter for a full square lap.
+const EDGE_MARGIN = 150;
+const EDGE_CORNERS = [
+  { x: EDGE_MARGIN, y: EDGE_MARGIN }, { x: WORLD_W - EDGE_MARGIN, y: EDGE_MARGIN },
+  { x: WORLD_W - EDGE_MARGIN, y: WORLD_H - EDGE_MARGIN }, { x: EDGE_MARGIN, y: WORLD_H - EDGE_MARGIN },
+];
+function nearestCorner(x, y) {
+  let best = 0, bd = Infinity;
+  for (let i = 0; i < 4; i++) {
+    const d = (x - EDGE_CORNERS[i].x) ** 2 + (y - EDGE_CORNERS[i].y) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+
 // ---------------------------------------------------------------- rooms
 const rooms = new Map();
 
@@ -224,6 +239,7 @@ function startRound(room, io) {
 
   // anti-shutout buff bookkeeping
   room.stalkerBuff = false;
+  room.edgePatrolAssigned = false;
   room.foundCount = 0;         // any hider converted this round
   room.humansFound = 0;        // human hiders converted this round
   room.humanHidersAtStart = [...room.players.values()]
@@ -434,6 +450,30 @@ function npcHiderTick(room, e, dtMs, now) {
 function npcSeekerTick(room, e, dtMs, now, io) {
   const ai = e.ai;
   if (room.phase !== 'SEEK') { e.input.dx = 0; e.input.dy = 0; return; }
+
+  // perimeter patrol overrides normal hunting until the full square lap is done
+  if (ai.edgePatrol) {
+    const wp = EDGE_CORNERS[(ai.edgeStart + ai.edgeSteps) % 4];
+    if (dist(e, wp) < 50) {
+      ai.edgeSteps++;
+      if (ai.edgeSteps >= 5) { ai.edgePatrol = false; return; }
+    }
+    const a = Math.atan2(wp.y - e.y, wp.x - e.x);
+    e.input.dx = Math.cos(a) * 0.85; e.input.dy = Math.sin(a) * 0.85;
+    e.rot = a;
+    if (now >= ai.nextShot) {
+      ai.nextShot = now + rand(1600, 3200);
+      let tgt = null, bd = 300;
+      for (const h of room.players.values()) {
+        if (h.role !== 'hider' || !h.connected) continue;
+        const d = dist(e, h);
+        if (d < bd && isSpottable(room, h)) { tgt = h; bd = d; }
+      }
+      if (tgt) npcFire(room, e, tgt.x, tgt.y, io);
+    }
+    return;
+  }
+
   const buffed = room.stalkerBuff && ai.advanced;   // anti-shutout empowerment
   const detect = (ai.advanced ? NPC_DETECT_ADV : NPC_DETECT) * (buffed ? 1.7 : 1);
   const escape = (ai.advanced ? NPC_ESCAPE_ADV : NPC_ESCAPE) * (buffed ? 1.5 : 1);
@@ -606,6 +646,18 @@ function tickRoom(room, io, dtMs) {
   // anti-shutout stalker buff: if human hiders are surviving too well, empower
   // the stalker(s) to find & convert at least one human, then relax.
   evaluateStalkerBuff(room, now);
+
+  // once 3+ NPC seekers exist, send one on a full-lap perimeter patrol
+  if (room.phase === 'SEEK' && !room.edgePatrolAssigned) {
+    const npcSeekers = [...room.players.values()].filter(p => !p.human && p.role === 'seeker' && p.connected);
+    if (npcSeekers.length >= 3) {
+      const k = npcSeekers[0];
+      k.ai.edgePatrol = true;
+      k.ai.edgeStart = nearestCorner(k.x, k.y);
+      k.ai.edgeSteps = 0;
+      room.edgePatrolAssigned = true;
+    }
+  }
 
   // NPC brains
   for (const p of room.players.values()) {

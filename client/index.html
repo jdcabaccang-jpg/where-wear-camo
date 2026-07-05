@@ -67,6 +67,20 @@ const BOT_NAMES = ['BOT-FERN', 'BOT-RIVER', 'BOT-MOSS', 'BOT-TWIG', 'BOT-PEBBLE'
 const HUNTER_SHOT_MUL = 1 / 1.15, STALKER_SHOT_MUL = 1 / 1.25;
 const LATE_SEEKER_TRIGGER_MS = 45000;   // offline 3rd seeker wakes at 45s left...
 const LATE_SEEKER_MIN_HIDERS = 2;       // ...or when fewer than 2 hiders remain
+// With 3+ NPC seekers, one walks the perimeter for at least one full square lap.
+const EDGE_MARGIN = 150;
+const EDGE_CORNERS = [
+  { x: EDGE_MARGIN, y: EDGE_MARGIN }, { x: WORLD_W - EDGE_MARGIN, y: EDGE_MARGIN },
+  { x: WORLD_W - EDGE_MARGIN, y: WORLD_H - EDGE_MARGIN }, { x: EDGE_MARGIN, y: WORLD_H - EDGE_MARGIN },
+];
+function nearestCorner(x, y) {
+  let best = 0, bd = Infinity;
+  for (let i = 0; i < 4; i++) {
+    const d = (x - EDGE_CORNERS[i].x) ** 2 + (y - EDGE_CORNERS[i].y) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
 const ONLINE_NAMES = ['jake02', 'greenbean', 'swampqueen', 'Milo', 'xCamoKing',
   'HideNSneak', 'notabot123', 'TTV_Bushman', 'peekaboo_', 'lil_sprout', 'Dmitri',
   'ferngully', 'SneakyPete', 'mudpie', 'ghostedu', 'Wren'];
@@ -187,6 +201,8 @@ class BootScene extends Phaser.Scene {
 class MenuScene extends Phaser.Scene {
   constructor() { super('menu'); }
   create() {
+    // match the in-game mobile zoom so the menu isn't tiny on phones
+    if (IS_TOUCH) this.cameras.main.setZoom(1.3);
     this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x22381c);
     this.add.nineslice(CANVAS_W / 2, CANVAS_H / 2 + 20, 'pxpanel', 0, 180, 130, 6, 6, 6, 6)
       .setScale(3).setTint(UI_PANEL_TINT);
@@ -209,7 +225,8 @@ class MenuScene extends Phaser.Scene {
       this.sound.play('click', { volume: sfxVol(this) });
       this.scene.start('settings', { from: 'menu' });
     });
-    pxText(this, CANVAS_W / 2, CANVAS_H - 24, 'assets by Kenney (CC0) - kenney.nl', '18px', UI_DIM);
+    pxText(this, CANVAS_W / 2, IS_TOUCH ? 616 : CANVAS_H - 24,
+      'assets by Kenney (CC0) - kenney.nl', '18px', UI_DIM);
   }
 }
 
@@ -634,6 +651,7 @@ class JungleScene extends Phaser.Scene {
     this.phase = this.online ? this.netData.phase : 'GRACE';
     this.phaseEndsAt = this.time.now + (this.online ? this.netData.phaseMs : GRACE_LEN);
     this.roundOver = false;
+    this.edgePatrolAssigned = false;
 
     // ---- entities
     this.entities = [];
@@ -686,11 +704,17 @@ class JungleScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.local.sprite, false, 0.1, 0.1);
 
     // ---- camera zoom: mobile starts zoomed in; pinch, mouse-wheel, or buttons
-    this.camZoom = IS_TOUCH ? 1.6 : 1;
+    this.camZoom = IS_TOUCH ? 1.3 : 1;
     this.minZoom = 0.8; this.maxZoom = 3;
     this.cameras.main.setZoom(this.camZoom);
     this.pinchPrev = 0;
     this.input.on('wheel', (p, go, dx, dy) => this.setZoom(this.camZoom - Math.sign(dy) * 0.2));
+
+    // Dedicated UI camera (never zoomed) so the HUD + touch controls stay fixed
+    // on screen no matter how the player zooms the world. All UI uses
+    // scrollFactor(0) and all world objects don't, so we auto-split them below.
+    this.uiCam = this.cameras.add(0, 0, CANVAS_W, CANVAS_H);
+    this.uiCam.setName('ui');
 
     // ---- shooting
     this.paintballs = this.physics.add.group({ maxSize: 40 });
@@ -794,7 +818,18 @@ class JungleScene extends Phaser.Scene {
     this.miniCfg = IS_TOUCH
       ? { x: CANVAS_W - 176, y: 78, w: 160, h: 120 }
       : { x: CANVAS_W - 176, y: CANVAS_H - 136, w: 160, h: 120 };
+
+    // Split render targets: UI (scrollFactor 0) -> UI camera only; world
+    // (everything else) -> main camera only. Keeps the HUD/controls fixed.
+    for (const o of this.children.list) {
+      if (o.scrollFactorX === 0) this.cameras.main.ignore(o);
+      else this.uiCam.ignore(o);
+    }
   }
+
+  // world objects created after create() must be hidden from the UI camera,
+  // or they double-render (once zoomed on main, once flat on the UI cam)
+  worldObj(o) { if (this.uiCam) this.uiCam.ignore(o); return o; }
 
   drawMiniMap() {
     const g = this.miniMap, c = this.miniCfg;
@@ -909,6 +944,7 @@ class JungleScene extends Phaser.Scene {
   fireVisualBall(x, y, angle) {
     const ball = this.paintballs.get(x, y, 'paintball');
     if (!ball) return;
+    this.worldObj(ball);
     ball.enableBody(true, x + Math.cos(angle) * 34, y + Math.sin(angle) * 34, true, true);
     ball.setScale(0.035).setTint(0xff6600).setDepth(5000);
     ball.body.setCircle(ball.width / 2);
@@ -938,10 +974,10 @@ class JungleScene extends Phaser.Scene {
         }
       },
     });
-    const label = this.add.text(ent.sprite.x, ent.sprite.y - 44, 'FOUND!', {
+    const label = this.worldObj(this.add.text(ent.sprite.x, ent.sprite.y - 44, 'FOUND!', {
       fontFamily: 'Kenney Future', fontSize: '24px', color: '#ffee55',
       stroke: '#000000', strokeThickness: 5,
-    }).setOrigin(0.5).setDepth(1e6);
+    }).setOrigin(0.5).setDepth(1e6));
     this.tweens.add({ targets: label, y: label.y - 34, alpha: 0, duration: 1500,
       onComplete: () => label.destroy() });
   }
@@ -949,6 +985,8 @@ class JungleScene extends Phaser.Scene {
   endRoundNet(d) {
     if (this.roundOver) return;
     this.roundOver = true;
+    // end screen renders on the main camera at 1:1 (UI cam off)
+    this.setZoom(1); if (this.uiCam) this.uiCam.setVisible(false);
     for (const e of this.entities) e.sprite.body.setVelocity(0, 0);
     this.sound.play('click', { volume: sfxVol(this) });
 
@@ -1325,12 +1363,50 @@ class JungleScene extends Phaser.Scene {
     }
   }
 
+  // Once 3+ NPC seekers are on the map, send one on a perimeter patrol (a full
+  // square lap). Assigned once per round to the seeker nearest the edge.
+  assignEdgePatrol() {
+    if (this.edgePatrolAssigned || this.phase !== 'SEEK') return;
+    const seekers = this.npcSeekers.filter(k => k.role === 'seeker' && !k.isLocal);
+    if (seekers.length < 3) return;
+    const k = seekers[0];
+    k.ai.edgePatrol = true;
+    k.ai.edgeStart = nearestCorner(k.sprite.x, k.sprite.y);
+    k.ai.edgeSteps = 0;
+    this.edgePatrolAssigned = true;
+  }
+
   npcSeekerAI(ent, time, delta) {
     if (this.phase !== 'SEEK') {                     // frozen during grace
       ent.sprite.body.setVelocity(0, 0);
       return;
     }
     const s = ent.sprite, ai = ent.ai;
+
+    // perimeter patrol overrides normal hunting until the lap is complete
+    if (ai.edgePatrol) {
+      const wp = EDGE_CORNERS[(ai.edgeStart + ai.edgeSteps) % 4];
+      if (Phaser.Math.Distance.Between(s.x, s.y, wp.x, wp.y) < 50) {
+        ai.edgeSteps++;
+        if (ai.edgeSteps >= 5) { ai.edgePatrol = false; return; }   // full square done
+      }
+      const a = Phaser.Math.Angle.Between(s.x, s.y, wp.x, wp.y);
+      s.body.setVelocity(Math.cos(a) * PLAYER_SPEED * 0.85, Math.sin(a) * PLAYER_SPEED * 0.85);
+      s.rotation = a;
+      // still fires at any hider it passes close to
+      if (time >= ai.nextShot) {
+        ai.nextShot = time + 1600 + Math.random() * 1600;
+        let tgt = null, bd = 300;
+        for (const h of this.entities) {
+          if (h.role !== 'hider') continue;
+          const d = Phaser.Math.Distance.Between(s.x, s.y, h.sprite.x, h.sprite.y);
+          if (d < bd && this.isSpottable(h)) { tgt = h; bd = d; }
+        }
+        if (tgt) this.fireBallFrom(ent, tgt.sprite.x, tgt.sprite.y);
+      }
+      return;
+    }
+
     const detect = ai.advanced ? NPC_DETECT_ADV : NPC_DETECT;
     const escape = ai.advanced ? NPC_ESCAPE_ADV : NPC_ESCAPE;
     const shotMul = ai.advanced ? STALKER_SHOT_MUL : HUNTER_SHOT_MUL;
@@ -1513,8 +1589,8 @@ class JungleScene extends Phaser.Scene {
 
     const strobing = this.phase === 'SEEK' && settled && this.time.now < this.strobeUntil;
     if (strobing && !ent.strobeOverlay) {
-      ent.strobeOverlay = this.add.tileSprite(s.x, s.y, s.width * 1.6, s.height * 1.6, 'pattern29')
-        .setDepth(s.depth + 1).setAlpha(0.9).setTileScale(0.18);
+      ent.strobeOverlay = this.worldObj(this.add.tileSprite(s.x, s.y, s.width * 1.6, s.height * 1.6, 'pattern29')
+        .setDepth(s.depth + 1).setAlpha(0.9).setTileScale(0.18));
       ent.strobeOverlay.setMask(new Phaser.Display.Masks.BitmapMask(this, s));
     }
     if (ent.strobeOverlay) {
@@ -1543,10 +1619,10 @@ class JungleScene extends Phaser.Scene {
 
   // ---------- splats / rings / chirps ----------
   addSplat(x, y) {
-    const s = this.add.image(x, y, 'splat' + Math.floor(Math.random() * 3))
+    const s = this.worldObj(this.add.image(x, y, 'splat' + Math.floor(Math.random() * 3))
       .setScale(0.18 + Math.random() * 0.1)
       .setRotation(Math.random() * Math.PI * 2)
-      .setTint(0xff6600).setAlpha(0.85).setDepth(-45);
+      .setTint(0xff6600).setAlpha(0.85).setDepth(-45));
     this.splats.push(s);
     if (this.splats.length > MAX_SPLATS) {
       const old = this.splats.shift();
@@ -1555,7 +1631,7 @@ class JungleScene extends Phaser.Scene {
   }
 
   spawnRing(x, y, color, maxR) {
-    const g = this.add.graphics().setDepth(9000);
+    const g = this.worldObj(this.add.graphics().setDepth(9000));
     const state = { r: 12 };
     this.tweens.add({
       targets: state, r: maxR, duration: 700, ease: 'Sine.easeOut',
@@ -1613,6 +1689,7 @@ class JungleScene extends Phaser.Scene {
     const angle = Phaser.Math.Angle.Between(p.x, p.y, wx, wy);
     const ball = this.paintballs.get(p.x, p.y, 'paintball');
     if (!ball) return;
+    this.worldObj(ball);
     ball.enableBody(true, p.x + Math.cos(angle) * 34, p.y + Math.sin(angle) * 34, true, true);
     ball.setScale(0.035).setTint(0xff6600).setDepth(5000);
     ball.body.setCircle(ball.width / 2);
@@ -1659,10 +1736,10 @@ class JungleScene extends Phaser.Scene {
         if (this.hidersLeft() === 0) this.endRound('seekers');
       },
     });
-    const label = this.add.text(ent.sprite.x, ent.sprite.y - 44, 'FOUND!', {
+    const label = this.worldObj(this.add.text(ent.sprite.x, ent.sprite.y - 44, 'FOUND!', {
       fontFamily: 'Kenney Future', fontSize: '24px', color: '#ffee55',
       stroke: '#000000', strokeThickness: 5,
-    }).setOrigin(0.5).setDepth(1e6);
+    }).setOrigin(0.5).setDepth(1e6));
     this.tweens.add({ targets: label, y: label.y - 34, alpha: 0, duration: 1500,
       onComplete: () => label.destroy() });
   }
@@ -1749,6 +1826,7 @@ class JungleScene extends Phaser.Scene {
   endRound(winner) {
     if (this.roundOver) return;
     this.roundOver = true;
+    this.setZoom(1); if (this.uiCam) this.uiCam.setVisible(false);   // scoreboard at 1:1
     for (const e of this.entities) e.sprite.body.setVelocity(0, 0);
     this.sound.play('click', { volume: sfxVol(this) });
 
@@ -1848,6 +1926,7 @@ class JungleScene extends Phaser.Scene {
       }
       // ---- NPC brains (offline only)
       this.maybeUpgradeHunter(time);
+      this.assignEdgePatrol();
       for (const h of this.npcHiders) this.npcHiderAI(h, time, delta);
       for (const k of this.npcSeekers) if (!k.isLocal) this.npcSeekerAI(k, time, delta);
     }
