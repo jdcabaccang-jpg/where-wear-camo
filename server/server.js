@@ -173,6 +173,7 @@ function startRound(room, io) {
   } else if (humans.length >= 2) {
     if (Math.random() < 0.5) humanSeekers = [ordered[0]];
   }
+  if (room.quick) humanSeekers = [];   // quick-match human always hides
   // solo online player always hides (matches offline)
   room.lastSeekerHumans = new Set(humanSeekers.map(h => h.id));
 
@@ -191,9 +192,18 @@ function startRound(room, io) {
     room.players.set(id, e);
     return e;
   };
-  for (let i = 0; i < npcHiderCount(humans.length); i++) addNpc('hider', false);
-  addNpc('seeker', true);                                   // stalker, always
-  if (humanSeekers.length === 0) addNpc('seeker', false);   // hunter fills the slot
+  if (room.quick) {
+    // full public-style lobby: 7-9 bots split into a couple of seekers + hiders
+    const total = room.quickNpcs || 8;
+    const npcSeekers = total >= 8 ? 3 : 2;
+    addNpc('seeker', true);                                 // 1 stalker
+    for (let i = 1; i < npcSeekers; i++) addNpc('seeker', false);   // hunters
+    for (let i = 0; i < total - npcSeekers; i++) addNpc('hider', false);
+  } else {
+    for (let i = 0; i < npcHiderCount(humans.length); i++) addNpc('hider', false);
+    addNpc('seeker', true);                                 // stalker, always
+    if (humanSeekers.length === 0) addNpc('seeker', false); // hunter fills the slot
+  }
 
   // ---- roles + spawns
   let spawnIdx = 0;
@@ -211,6 +221,13 @@ function startRound(room, io) {
     }
     if (!p.human && p.role === 'hider') p.ai.target = pickHidingSpot(room, { initial: true });
   }
+
+  // anti-shutout buff bookkeeping
+  room.stalkerBuff = false;
+  room.foundCount = 0;         // any hider converted this round
+  room.humansFound = 0;        // human hiders converted this round
+  room.humanHidersAtStart = [...room.players.values()]
+    .filter(p => p.human && p.role === 'hider').length;
 
   room.phase = 'GRACE';
   const { graceMs, seekMs, rounds } = room.settings;
@@ -381,9 +398,11 @@ function npcHiderTick(room, e, dtMs, now) {
 function npcSeekerTick(room, e, dtMs, now, io) {
   const ai = e.ai;
   if (room.phase !== 'SEEK') { e.input.dx = 0; e.input.dy = 0; return; }
-  const detect = ai.advanced ? NPC_DETECT_ADV : NPC_DETECT;
-  const escape = ai.advanced ? NPC_ESCAPE_ADV : NPC_ESCAPE;
-  const shotMul = ai.advanced ? STALKER_SHOT_MUL : HUNTER_SHOT_MUL;
+  const buffed = room.stalkerBuff && ai.advanced;   // anti-shutout empowerment
+  const detect = (ai.advanced ? NPC_DETECT_ADV : NPC_DETECT) * (buffed ? 1.7 : 1);
+  const escape = (ai.advanced ? NPC_ESCAPE_ADV : NPC_ESCAPE) * (buffed ? 1.5 : 1);
+  const shotMul = (ai.advanced ? STALKER_SHOT_MUL : HUNTER_SHOT_MUL) * (buffed ? 0.6 : 1);
+  const chaseSpeed = buffed ? PLAYER_SPEED * 1.03 : CHASE_SPEED;   // out-runs a fleeing human
 
   if (ai.chase) {
     const t = ai.chase.target;
@@ -396,14 +415,25 @@ function npcSeekerTick(room, e, dtMs, now, io) {
       ai.chase = null; ai.target = null;
     } else {
       const a = Math.atan2(t.y - e.y, t.x - e.x);
-      e.input.dx = Math.cos(a) * (CHASE_SPEED / PLAYER_SPEED);
-      e.input.dy = Math.sin(a) * (CHASE_SPEED / PLAYER_SPEED);
+      e.input.dx = Math.cos(a) * (chaseSpeed / PLAYER_SPEED);
+      e.input.dy = Math.sin(a) * (chaseSpeed / PLAYER_SPEED);
       e.rot = a;
       if (now >= ai.nextShot) {
         ai.nextShot = now + CHASE_SHOT_EVERY * shotMul;
         npcFire(room, e, t.x, t.y, io);
       }
       return;
+    }
+  }
+
+  // buffed stalkers sense HUMAN hiders through their blend and lock on first
+  if (buffed) {
+    for (const h of room.players.values()) {
+      if (h.role === 'hider' && h.human && h.connected && dist(e, h) <= detect) {
+        ai.chase = { target: h, since: now };
+        ai.nextShot = Math.min(ai.nextShot, now + 120);
+        return;
+      }
     }
   }
 
@@ -494,6 +524,8 @@ function infect(room, target, shooter, io) {
   if (room.phase !== 'SEEK') return;   // nothing can be infected outside SEEK
   target.role = 'seeker';
   if (shooter && shooter.role === 'seeker') shooter.found++;
+  room.foundCount = (room.foundCount || 0) + 1;
+  if (target.human) room.humansFound = (room.humansFound || 0) + 1;
   if (!target.human) {
     target.ai = { advanced: false, target: null, targetUntil: 0,
       nextShot: Date.now() + 2000, chirpLead: null, chase: null,
@@ -502,6 +534,25 @@ function infect(room, target, shooter, io) {
   io.to(room.code).emit('playerInfected', { id: target.id, byId: shooter ? shooter.id : null });
   const hidersLeft = [...room.players.values()].filter(p => p.role === 'hider' && p.connected);
   if (hidersLeft.length === 0) endRound(room, io, 'seekers');
+}
+
+// Anti-shutout buff decision (pure enough to unit-test): flips room.stalkerBuff.
+// ON when human hiders survive too well — 0 finds by 30s, or >50% of human
+// hiders still alive at 45s elapsed. OFF once any human hider is converted.
+function evaluateStalkerBuff(room, now) {
+  if (room.phase !== 'SEEK' || room.humanHidersAtStart <= 0) return room.stalkerBuff;
+  if (room.humansFound >= 1) { room.stalkerBuff = false; return false; }   // stand down
+  if (room.stalkerBuff) return true;
+  const elapsed = room.settings.seekMs - (room.phaseEndsAt - now);
+  const aliveHumanHiders = [...room.players.values()]
+    .filter(p => p.human && p.role === 'hider' && p.connected).length;
+  const overHalf = aliveHumanHiders > room.humanHidersAtStart / 2;
+  if ((elapsed >= 30000 && room.foundCount === 0) || (elapsed >= 45000 && overHalf)) {
+    room.stalkerBuff = true;
+    console.log(`[${room.code || '?'}] stalker buff ON @${Math.round(elapsed / 1000)}s ` +
+      `(humanHidersAlive=${aliveHumanHiders}/${room.humanHidersAtStart}, found=${room.foundCount})`);
+  }
+  return room.stalkerBuff;
 }
 
 // ---------------------------------------------------------------- game tick
@@ -515,6 +566,10 @@ function tickRoom(room, io, dtMs) {
     room.strobeUntil = now + STROBE_WARN + STROBE_LEN;   // reveal follows the warn
     io.to(room.code).emit('strobe', { warnMs: STROBE_WARN, lenMs: STROBE_LEN });
   }
+
+  // anti-shutout stalker buff: if human hiders are surviving too well, empower
+  // the stalker(s) to find & convert at least one human, then relax.
+  evaluateStalkerBuff(room, now);
 
   // NPC brains
   for (const p of room.players.values()) {
@@ -632,6 +687,24 @@ io.on('connection', (socket) => {
     joinAs(target || createRoom(socket));
   });
 
+  // Quick Join: drop straight into a "public" match already full of players.
+  // (Create Room and Quick Join were functionally identical when nobody else
+  // is online - both just spun up an empty room. This makes Quick Join feel
+  // like joining a populated lobby: 7-9 realistically-named bots, auto-start.)
+  socket.on('quickJoin', () => {
+    if (roomOf(socket)) return socket.emit('errorMsg', 'Already in a room');
+    const room = createRoom(socket);
+    room.quick = true;
+    room.quickNpcs = 7 + Math.floor(Math.random() * 3);   // 7-9 "players"
+    const ent = makeEntity(socket.id, socket.data.username, true);
+    room.players.set(socket.id, ent);
+    socket.data.roomCode = room.code;
+    socket.join(room.code);
+    const names = [...ONLINE_NAMES].sort(() => Math.random() - 0.5).slice(0, room.quickNpcs);
+    socket.emit('quickMatchFound', { count: room.quickNpcs + 1, names });
+    addTimer(room, 1400, () => startMatch(room, io));
+  });
+
   socket.on('startGame', () => {
     const room = roomOf(socket);
     if (!room || room.hostId !== socket.id || room.phase !== 'LOBBY') return;
@@ -737,15 +810,20 @@ io.on('connection', (socket) => {
   }
 });
 
-// global tick
-let lastTick = Date.now();
-setInterval(() => {
-  const now = Date.now();
-  const dt = now - lastTick;
-  lastTick = now;
-  for (const room of rooms.values()) tickRoom(room, io, dt);
-}, TICK_MS);
+// Only run the live server when executed directly; `require()` (unit tests)
+// gets the exported helpers without opening a port or ticking.
+if (require.main === module) {
+  let lastTick = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const dt = now - lastTick;
+    lastTick = now;
+    for (const room of rooms.values()) tickRoom(room, io, dt);
+  }, TICK_MS);
 
-httpServer.listen(PORT, () => {
-  console.log(`Where/Wear Camo server listening on :${PORT}`);
-});
+  httpServer.listen(PORT, () => {
+    console.log(`Where/Wear Camo server listening on :${PORT}`);
+  });
+}
+
+module.exports = { evaluateStalkerBuff };

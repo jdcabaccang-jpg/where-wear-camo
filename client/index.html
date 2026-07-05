@@ -193,19 +193,104 @@ class MenuScene extends Phaser.Scene {
     pxText(this, CANVAS_W / 2, 140, 'WHERE/WEAR CAMO', '64px', UI_HEAD);
     pxText(this, CANVAS_W / 2, 192, 'a hide & seek party game', '26px', UI_SOFT);
 
-    makePxButton(this, CANVAS_W / 2, 300, 'OFFLINE MODE', () => {
+    makePxButton(this, CANVAS_W / 2, 278, 'OFFLINE MODE', () => {
       this.sound.play('click', { volume: sfxVol(this) });
       this.scene.start('jungle');
     });
-    makePxButton(this, CANVAS_W / 2, 385, 'ONLINE MODE', () => {
+    makePxButton(this, CANVAS_W / 2, 349, 'ONLINE MODE', () => {
       this.sound.play('click', { volume: sfxVol(this) });
       this.scene.start('online');
     });
-    makePxButton(this, CANVAS_W / 2, 470, 'SETTINGS', () => {
+    makePxButton(this, CANVAS_W / 2, 420, 'HOW TO PLAY', () => {
+      this.sound.play('click', { volume: sfxVol(this) });
+      this.scene.start('howto');
+    });
+    makePxButton(this, CANVAS_W / 2, 491, 'SETTINGS', () => {
       this.sound.play('click', { volume: sfxVol(this) });
       this.scene.start('settings', { from: 'menu' });
     });
-    pxText(this, CANVAS_W / 2, CANVAS_H - 28, 'assets by Kenney (CC0) - kenney.nl', '18px', UI_DIM);
+    pxText(this, CANVAS_W / 2, CANVAS_H - 24, 'assets by Kenney (CC0) - kenney.nl', '18px', UI_DIM);
+  }
+}
+
+// ---------------------------------------------------------------- how to play
+class HowToScene extends Phaser.Scene {
+  constructor() { super('howto'); }
+
+  create() {
+    // pages: each line is [text, isHeading]
+    this.pages = [
+      [
+        ['THE GOAL', 1],
+        ['You are a HIDER. Blend in and survive until', 0],
+        ['the timer runs out. Seekers hunt you with', 0],
+        ['paintballs - get tagged and you join them.', 0],
+        ['', 0],
+        ['CHAMELEON CAMO', 1],
+        ['Stand still and your colours melt into the', 0],
+        ['ground or bush you are on - only a faint', 0],
+        ['outline gives you away. MOVING makes you', 0],
+        ['bright and obvious. Stillness is survival.', 0],
+        ['', 0],
+        ['GRACE then SEEK', 1],
+        ['First 20s: hide while seekers are frozen and', 0],
+        ['blind. Then the hunt begins.', 0],
+      ],
+      [
+        ['CONTROLS', 1],
+        ['Move    -  WASD / arrows  (joystick on mobile)', 0],
+        ['Blend   -  SPACE / BLEND button  (3s cooldown)', 0],
+        ['Chirp   -  C / CHIRP button  (taunt!)', 0],
+        ['Shoot   -  mouse + click  (seekers only)', 0],
+        ['Pause   -  ESC / pause button', 0],
+        ['', 0],
+        ['TRICKS OF THE JUNGLE', 1],
+        ['The MUSIC speeds up as a seeker nears - it is', 0],
+        ['your radar. Every 10s a strobe flashes blended', 0],
+        ['hiders, so keep changing spots. CHIRPING rings', 0],
+        ['out your position for points - risky but bold.', 0],
+        ['Mini-map: you are white, seekers orange, other', 0],
+        ['hiders green (hiders only see hiders).', 0],
+      ],
+    ];
+    this.page = 0;
+    this.render();
+  }
+
+  render() {
+    this.children.removeAll();
+    this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x22381c);
+    this.add.nineslice(CANVAS_W / 2, CANVAS_H / 2 + 6, 'pxpanel', 0, 208, 168, 6, 6, 6, 6)
+      .setScale(3).setTint(UI_PANEL_TINT);
+    pxText(this, CANVAS_W / 2, 66, 'HOW TO PLAY', '46px', UI_HEAD);
+    pxText(this, CANVAS_W / 2, 104, `${this.page + 1} / ${this.pages.length}`, '18px', UI_SOFT);
+
+    let y = 150;
+    const left = CANVAS_W / 2 - 300;
+    for (const [text, heading] of this.pages[this.page]) {
+      if (text) {
+        this.add.text(left, y, text, {
+          fontFamily: 'Kenney Pixel', fontSize: heading ? '24px' : '20px',
+          color: heading ? UI_HEAD : UI_TEXT, stroke: '#1c2b14', strokeThickness: 3,
+        }).setOrigin(0, 0.5);
+      }
+      y += text === '' ? 12 : (heading ? 34 : 28);
+    }
+
+    if (this.page > 0) {
+      makePxButton(this, CANVAS_W / 2 - 190, CANVAS_H - 48, '< BACK', () => {
+        this.sound.play('click', { volume: sfxVol(this) }); this.page--; this.render();
+      }).setScale(2.6);
+    }
+    if (this.page < this.pages.length - 1) {
+      makePxButton(this, CANVAS_W / 2 + 190, CANVAS_H - 48, 'NEXT >', () => {
+        this.sound.play('click', { volume: sfxVol(this) }); this.page++; this.render();
+      }).setScale(2.6);
+    }
+    makePxButton(this, CANVAS_W / 2, CANVAS_H - 48, 'MENU', () => {
+      this.sound.play('click', { volume: sfxVol(this) });
+      this.scene.start('menu');
+    }).setScale(2.6);
   }
 }
 
@@ -288,6 +373,11 @@ class OnlineScene extends Phaser.Scene {
     s.on('lobbyUpdate', (st) => { if (this.inLobby) this.showLobby(st); });
     s.on('hostChanged', (d) => { if (this.lastState) { this.lastState.hostId = d.hostId; this.showLobby(this.lastState); } });
     s.on('errorMsg', (msg) => this.status.setText(String(msg)));
+    s.on('quickMatchFound', (d) => {
+      this.inLobby = false;
+      this.clearUi();
+      this.status.setText(`match found - ${d.count} players`);
+    });
     s.on('roundStart', (data) => {
       this.scene.start('jungle', { online: true, net: data });
     });
@@ -304,7 +394,9 @@ class OnlineScene extends Phaser.Scene {
       this.sendName(); this.sock.emit('createRoom');
     }));
     this.ui.push(makePxButton(this, CANVAS_W / 2, 395, 'QUICK JOIN', () => {
-      this.sendName(); this.sock.emit('joinRandom');
+      this.sendName(); this.sock.emit('quickJoin');
+      this.clearUi();
+      this.status.setText('finding a match...');
     }));
     this.ui.push(makePxButton(this, CANVAS_W / 2, 470, 'JOIN WITH CODE', () => {
       this.sendName();
@@ -561,8 +653,8 @@ class JungleScene extends Phaser.Scene {
       this.lastInputSent = 0;
       this.bindGameSocket();
     } else {
-      // Offline roster: YOU hiding + 6 NPC hiders + 3 NPC seekers
-      // (hunter + stalker active; a 2nd hunter wakes late in the round)
+      // Offline roster: YOU hiding + 6 NPC hiders + 2 NPC seekers (hunter +
+      // stalker). At the endgame trigger the hunter UPGRADES into a stalker.
       this.local = this.spawnEntity(HIDER_SPAWNS[0].x, HIDER_SPAWNS[0].y, 'hider', 'jungle');
       this.local.isLocal = true;
       this.local.name = 'YOU';
@@ -577,17 +669,16 @@ class JungleScene extends Phaser.Scene {
           stuckCheck: { x: 0, y: 0, at: 0 }, relocateAt: 0, nextChirp: 0, crowdedSince: 0 };
         this.npcHiders.push(h);
       }
-      const mkSeeker = (ox, oy, advanced, dormant) => {
+      const mkSeeker = (ox, oy, advanced) => {
         const k = this.spawnEntity(SEEKER_SPAWN.x + ox, SEEKER_SPAWN.y + oy, 'seeker', 'urban');
         k.name = namePool.pop();
         k.ai = this.freshSeekerAI(advanced);
-        k.ai.dormant = dormant;
         this.npcSeekers.push(k);
         return k;
       };
-      mkSeeker(0, 0, false, false);      // hunter, on the prowl from SEEK start
-      mkSeeker(70, 40, true, false);     // stalker (advanced), same
-      mkSeeker(30, 90, false, true);     // late hunter: 45s left or <2 hiders
+      mkSeeker(0, 0, false);       // hunter, on the prowl from SEEK start
+      mkSeeker(70, 40, true);      // stalker (advanced), same
+      this.hunterUpgraded = false; // becomes a 2nd stalker at the endgame trigger
     }
 
     this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
@@ -1148,23 +1239,25 @@ class JungleScene extends Phaser.Scene {
     return moving || ent.stillTimer <= 900 || strobing;
   }
 
+  // Offline endgame squeeze: with 45s left OR fewer than 2 hiders alive, one
+  // hunter reactivates as a stalker (gains the advanced brain) - once per round.
+  maybeUpgradeHunter(time) {
+    if (this.online || this.hunterUpgraded || this.phase !== 'SEEK') return;
+    const hidersActive = this.entities.filter(e => e.role === 'hider').length;
+    const remaining = this.phaseEndsAt - time;
+    if (remaining <= LATE_SEEKER_TRIGGER_MS || hidersActive < LATE_SEEKER_MIN_HIDERS) {
+      const hunter = this.npcSeekers.find(k => k.role === 'seeker' && !k.ai.advanced);
+      if (hunter) { hunter.ai.advanced = true; hunter.ai.searchAt = null; }
+      this.hunterUpgraded = true;
+    }
+  }
+
   npcSeekerAI(ent, time, delta) {
     if (this.phase !== 'SEEK') {                     // frozen during grace
       ent.sprite.body.setVelocity(0, 0);
       return;
     }
     const s = ent.sprite, ai = ent.ai;
-    // late seeker: waits at spawn until the endgame trigger
-    if (ai.dormant) {
-      const hidersActive = this.entities.filter(e => e.role === 'hider').length;
-      const remaining = this.phaseEndsAt - time;
-      if (remaining <= LATE_SEEKER_TRIGGER_MS || hidersActive < LATE_SEEKER_MIN_HIDERS) {
-        ai.dormant = false;
-      } else {
-        s.body.setVelocity(0, 0);
-        return;
-      }
-    }
     const detect = ai.advanced ? NPC_DETECT_ADV : NPC_DETECT;
     const escape = ai.advanced ? NPC_ESCAPE_ADV : NPC_ESCAPE;
     const shotMul = ai.advanced ? STALKER_SHOT_MUL : HUNTER_SHOT_MUL;
@@ -1681,6 +1774,7 @@ class JungleScene extends Phaser.Scene {
         }
       }
       // ---- NPC brains (offline only)
+      this.maybeUpgradeHunter(time);
       for (const h of this.npcHiders) this.npcHiderAI(h, time, delta);
       for (const k of this.npcSeekers) if (!k.isLocal) this.npcSeekerAI(k, time, delta);
     }
@@ -1841,7 +1935,7 @@ Promise.all([
     backgroundColor: '#2d4a26',
     scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
     physics: { default: 'arcade', arcade: { debug: false } },
-    scene: [BootScene, MenuScene, OnlineScene, SettingsScene, PauseScene, JungleScene],
+    scene: [BootScene, MenuScene, OnlineScene, HowToScene, SettingsScene, PauseScene, JungleScene],
   });
 });
 </script>
