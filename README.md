@@ -1,9 +1,10 @@
-# Where/Wear Camo
+# Wear Camo
 
-Multiplayer hide-and-seek party game built on Kenney assets (CC0). Hiders are
-chameleons: stand still and your colors adapt to whatever you're standing on
-(grass, dirt, water, bushes) — only a subtle outline gives you away. Seekers
-hunt with a paintball gun; hit hiders join the seekers mid-round.
+Multiplayer hide-and-seek party game built on Kenney assets (CC0). Hiders wear
+biome camo (woodland / desert / urban): keep moving and your camo cloth is
+plainly visible, but hold still and your colors adapt to whatever you're
+standing on (grass, dirt, water, bushes) until only a subtle outline gives you
+away. Seekers hunt with a paintball gun; hit hiders join the seekers mid-round.
 
 ## Maps
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Where/Wear Camo</title>
+<title>Wear Camo</title>
 <style>
   @font-face { font-family: 'Kenney Future'; src: url('assets/fonts/Kenney Future.ttf'); }
   @font-face { font-family: 'Kenney Pixel'; src: url('assets/fonts/Kenney Pixel.ttf'); }
@@ -119,6 +119,45 @@ function mulberry32(a) {
   };
 }
 
+// Procedural camo cloth: Kenney's Pattern Pack is decorative (waves, dots,
+// chevrons), not military camo, so we bake our own tileable woodland/desert/
+// urban splotch textures. These are what the hiders literally WEAR — the game
+// is "Wear Camo". Palettes are 4 tones (base + 3 splotch colors) per biome.
+const CAMO_PALETTES = {
+  jungle: ['#3b4a26', '#586f31', '#2b381c', '#6e8a3e'],
+  desert: ['#b9974e', '#8f6f36', '#d8c184', '#6f5326'],
+  urban:  ['#6f6f6f', '#565656', '#9a9a9a', '#3a3a3a'],
+};
+function buildCamoTextures(scene) {
+  const W = 96, H = 96;
+  for (const key in CAMO_PALETTES) {
+    if (scene.textures.exists('camo_' + key)) continue;
+    const pal = CAMO_PALETTES[key];
+    const tex = scene.textures.createCanvas('camo_' + key, W, H);
+    const ctx = tex.getContext();
+    ctx.fillStyle = pal[0];
+    ctx.fillRect(0, 0, W, H);
+    const rnd = mulberry32(0x0CAF00 + key.charCodeAt(0) * 131);
+    // Each splotch = a small cluster of overlapping blobs, drawn wrapped across
+    // all 8 neighbours so the texture tiles seamlessly on the hider's body.
+    for (let i = 0; i < 26; i++) {
+      ctx.fillStyle = pal[1 + Math.floor(rnd() * 3)];
+      const cx = rnd() * W, cy = rnd() * H, parts = 3 + Math.floor(rnd() * 3);
+      for (let p = 0; p < parts; p++) {
+        const ox = (rnd() - 0.5) * 18, oy = (rnd() - 0.5) * 18;
+        const r = 5 + rnd() * 9, ry = r * (0.6 + rnd() * 0.6), rot = rnd() * 6.283;
+        for (let gx = -1; gx <= 1; gx++) for (let gy = -1; gy <= 1; gy++) {
+          ctx.beginPath();
+          ctx.ellipse(cx + ox + gx * W, cy + oy + gy * H, r, ry, rot, 0, 6.283);
+          ctx.fill();
+        }
+      }
+    }
+    tex.refresh();
+    tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
+  }
+}
+
 // Bird chirp: no bird audio exists in the Kenney library, so synthesize two
 // quick rising blips (spec-approved fallback for missing sound roles).
 function synthChirp(volume) {
@@ -189,6 +228,7 @@ class BootScene extends Phaser.Scene {
     for (const k of ['seeker', 'pxpanel', 'pxbutton', 'pxbutton_down']) {
       this.textures.get(k).setFilter(Phaser.Textures.FilterMode.NEAREST);
     }
+    buildCamoTextures(this);   // bake the woodland/desert/urban camo cloth once
     if (this.registry.get('musicVol') === undefined) {
       this.registry.set('musicVol', 0.35);
       this.registry.set('sfxVol', 0.6);
@@ -204,10 +244,21 @@ class MenuScene extends Phaser.Scene {
     // match the in-game mobile zoom so the menu isn't tiny on phones
     if (IS_TOUCH) this.cameras.main.setZoom(1.3);
     this.add.rectangle(CANVAS_W / 2, CANVAS_H / 2, CANVAS_W, CANVAS_H, 0x22381c);
+    // camo cloth banner behind the title — the game's calling card
+    this.add.tileSprite(CANVAS_W / 2, 138, 620, 108, 'camo_jungle')
+      .setTileScale(0.75).setAlpha(0.9);
+    this.add.rectangle(CANVAS_W / 2, 138, 620, 108).setStrokeStyle(4, 0x1c2b14, 0.9);
     this.add.nineslice(CANVAS_W / 2, CANVAS_H / 2 + 20, 'pxpanel', 0, 180, 130, 6, 6, 6, 6)
       .setScale(3).setTint(UI_PANEL_TINT);
-    pxText(this, CANVAS_W / 2, 140, 'WHERE/WEAR CAMO', '64px', UI_HEAD);
-    pxText(this, CANVAS_W / 2, 192, 'a hide & seek party game', '26px', UI_SOFT);
+    pxText(this, CANVAS_W / 2, 124, 'WEAR CAMO', '72px', UI_HEAD);
+    pxText(this, CANVAS_W / 2, 176, 'blend in or get found', '26px', UI_SOFT);
+    // three camo swatches — jungle / desert / urban, the outfits you can wear
+    const swatchKeys = ['camo_jungle', 'camo_desert', 'camo_urban'];
+    swatchKeys.forEach((key, i) => {
+      const sx = CANVAS_W / 2 - 46 + i * 46;
+      this.add.tileSprite(sx, 214, 38, 26, key).setTileScale(0.5);
+      this.add.rectangle(sx, 214, 38, 26).setStrokeStyle(2, 0x1c2b14, 0.9);
+    });
 
     makePxButton(this, CANVAS_W / 2, 278, 'OFFLINE MODE', () => {
       this.sound.play('click', { volume: sfxVol(this) });
@@ -1182,11 +1233,26 @@ class JungleScene extends Phaser.Scene {
       s.clearTint(); s.tintFill = false; s.setAlpha(1); s.setVisible(true);
       s.body.setCircle(6, 1, 0);
       if (ent.strobeOverlay) ent.strobeOverlay.setVisible(false);
+      if (ent.camoOverlay) ent.camoOverlay.setVisible(false);   // hunters wear no camo
     } else {
       s.setTexture('player_stand').setScale(1);
       s.setTint(CAMO[ent.camoKey].tint);
       s.body.setCircle(16, s.width / 2 - 16, s.height / 2 - 16);
+      this.ensureCamoOverlay(ent);
     }
+  }
+
+  // A hider's camo cloth: a tileable pattern clipped to their silhouette. It
+  // shows while they move/are exposed and fades out as they settle and blend,
+  // so "wearing camo" is visible yet movement still gives you away.
+  ensureCamoOverlay(ent) {
+    if (ent.camoOverlay || ent.role !== 'hider') return;
+    const s = ent.sprite;
+    const key = 'camo_' + (CAMO[ent.camoKey] ? ent.camoKey : 'jungle');
+    const ov = this.worldObj(this.add.tileSprite(s.x, s.y, s.width, s.height, key)
+      .setDepth(s.depth + 1).setTileScale(0.5).setAlpha(0).setVisible(false));
+    ov.setMask(new Phaser.Display.Masks.BitmapMask(this, s));
+    ent.camoOverlay = ov;
   }
 
   toggleRole() {
@@ -1587,17 +1653,32 @@ class JungleScene extends Phaser.Scene {
     if (settled) s.setTintFill(tint); else s.setTint(tint);
     s.alpha = 1;
 
+    // Camo cloth: bright when exposed (moving / not yet settled), fading to
+    // nothing as they melt into the ground colour.
+    if (ent.camoOverlay) {
+      const ov = ent.camoOverlay;
+      const expose = moving ? 0.92
+        : Phaser.Math.Clamp(1 - ent.stillTimer / 900, 0, 1) * 0.92;
+      ov.alpha += (expose - ov.alpha) * (1 - Math.exp(-delta * 0.012));
+      if (ov.alpha < 0.02) { ov.setVisible(false); }
+      else {
+        ov.setVisible(s.visible);
+        ov.setPosition(s.x, s.y).setDepth(s.depth + 1);
+        ov.tilePositionX += delta * 0.004;
+      }
+    }
+
     const strobing = this.phase === 'SEEK' && settled && this.time.now < this.strobeUntil;
     if (strobing && !ent.strobeOverlay) {
       ent.strobeOverlay = this.worldObj(this.add.tileSprite(s.x, s.y, s.width * 1.6, s.height * 1.6, 'pattern29')
-        .setDepth(s.depth + 1).setAlpha(0.9).setTileScale(0.18));
+        .setDepth(s.depth + 2).setAlpha(0.9).setTileScale(0.18));
       ent.strobeOverlay.setMask(new Phaser.Display.Masks.BitmapMask(this, s));
     }
     if (ent.strobeOverlay) {
       const show = strobing && s.visible;
       ent.strobeOverlay.setVisible(show);
       if (show) {
-        ent.strobeOverlay.setPosition(s.x, s.y).setDepth(s.depth + 1);
+        ent.strobeOverlay.setPosition(s.x, s.y).setDepth(s.depth + 2);
         ent.strobeOverlay.tilePositionX += delta * 0.03;
       }
     }
@@ -1986,7 +2067,10 @@ class JungleScene extends Phaser.Scene {
       for (const ent of this.entities) {
         if (ent.role === 'hider' && !ent.isLocal) {
           ent.sprite.setVisible(!seekerBlind);
-          if (ent.strobeOverlay && seekerBlind) ent.strobeOverlay.setVisible(false);
+          if (seekerBlind) {
+            if (ent.strobeOverlay) ent.strobeOverlay.setVisible(false);
+            if (ent.camoOverlay) ent.camoOverlay.setVisible(false);
+          }
         }
       }
     }
