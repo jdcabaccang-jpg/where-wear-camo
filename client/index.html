@@ -199,6 +199,12 @@ const sfxVol = (scene) => scene.registry.get('sfxVol');
 class BootScene extends Phaser.Scene {
   constructor() { super('boot'); }
   preload() {
+    // Load everything in a single wave. Phaser's default maxParallelDownloads
+    // is 32; with 43 assets that forces a second batch, and this build's loader
+    // fails to pump the queue after the first batch drains — leaving players
+    // stuck at ~74%. A cap above the asset count dispatches them all at once so
+    // there's no second wave to stall on (the browser still throttles sockets).
+    this.load.maxParallelDownloads = 128;
     this.load.spritesheet('tiles', 'assets/tiles/tilesheet_complete.png',
       { frameWidth: TILE, frameHeight: TILE });
     this.load.spritesheet('crosshairs', 'assets/ui/crosshairs_tilesheet_white.png',
