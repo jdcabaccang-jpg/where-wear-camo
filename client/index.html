@@ -721,6 +721,10 @@ class JungleScene extends Phaser.Scene {
     this.online = !!(data && data.online);
     this.netData = this.online ? data.net : null;
     this.sock = this.online ? window.game.socket : null;
+    // offline "Play Again" passes the map just played so we pick a different one
+    this.prevThemeName = (data && data.prevTheme) || null;
+    // per-round vote state (scene instance is reused across scene.restart)
+    this.voteAnchorY = null; this.pendingVote = null; this.voteBtns = null; this.myVote = null;
   }
 
   create() {
@@ -728,7 +732,10 @@ class JungleScene extends Phaser.Scene {
     // theme + seed: server-dictated online (identical map on every client)
     this.theme = this.online
       ? (MAPS.find(m => m.name === this.netData.theme) || MAPS[0])
-      : MAPS[Math.floor(Math.random() * MAPS.length)];
+      : (() => {   // offline: random, but never the map we just replayed
+          const pool = MAPS.filter(m => m.name !== this.prevThemeName);
+          return pool[Math.floor(Math.random() * pool.length)];
+        })();
     this.rng = mulberry32(this.online ? this.netData.seed : (Math.random() * 0xffffffff) | 0);
     this.cameras.main.setBackgroundColor(this.theme.bg);
     this.colorCache = new Map();
@@ -1016,6 +1023,12 @@ class JungleScene extends Phaser.Scene {
       }
     });
     s.on('roundEnd', (d) => this.endRoundNet(d));
+    s.on('mapVote', (d) => {
+      // scoreboard sets voteAnchorY; if the vote beat it here, stash it
+      if (this.voteAnchorY != null) this.renderMapVote(d);
+      else this.pendingVote = d;
+    });
+    s.on('voteUpdate', (d) => this.updateVoteCounts(d.counts || {}));
     s.on('roundStart', (data) => {
       this.scene.restart({ online: true, net: data });
     });
@@ -1140,14 +1153,64 @@ class JungleScene extends Phaser.Scene {
         this.scene.start('online');
       });
     } else {
-      px(CANVAS_W / 2, footY, 'next round starting...', '22px', UI_SOFT);
-      // depleting countdown bar
+      px(CANVAS_W / 2, footY, 'VOTE  ·  NEXT MAP', '24px', UI_HEAD);
+      // depleting countdown bar = time left to vote
       const barW = 360;
-      this.add.rectangle(CANVAS_W / 2, footY + 30, barW, 12, 0x1e3016)
+      this.add.rectangle(CANVAS_W / 2, footY + 22, barW, 10, 0x1e3016)
         .setScrollFactor(0).setDepth(2e6 + 1);
-      const fill = this.add.rectangle(CANVAS_W / 2 - barW / 2, footY + 30, barW, 12, 0xa8e86e)
+      const fill = this.add.rectangle(CANVAS_W / 2 - barW / 2, footY + 22, barW, 10, 0xa8e86e)
         .setOrigin(0, 0.5).setScrollFactor(0).setDepth(2e6 + 2);
       this.tweens.add({ targets: fill, width: 0, duration: d.nextInMs, ease: 'Linear' });
+      this.voteAnchorY = footY + 62;
+      // the mapVote event may have arrived before this scoreboard was drawn
+      if (this.pendingVote) { this.renderMapVote(this.pendingVote); this.pendingVote = null; }
+    }
+  }
+
+  // ---------- next-map vote (online) ----------
+  renderMapVote(d) {
+    this.voteCandidates = d.candidates || [];
+    this.myVote = null;
+    this.voteBtns = {};
+    const n = this.voteCandidates.length;
+    if (!n) return;
+    const bw = 196, gap = 16, totalW = n * bw + (n - 1) * gap;
+    const startX = CANVAS_W / 2 - totalW / 2 + bw / 2;
+    const y = this.voteAnchorY;
+    this.voteCandidates.forEach((theme, i) => {
+      const x = startX + i * (bw + gap);
+      const bg = this.add.rectangle(x, y, bw, 48, UI_BTN_TINT)
+        .setStrokeStyle(3, 0x1c2b14)
+        .setScrollFactor(0).setDepth(2e6 + 2).setInteractive({ useHandCursor: true });
+      const label = this.add.text(x, y - 8, theme, {
+        fontFamily: 'Kenney Pixel', fontSize: '22px', color: UI_TEXT,
+        stroke: '#1c2b14', strokeThickness: 3,
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(2e6 + 3);
+      const cnt = this.add.text(x, y + 13, '0 votes', {
+        fontFamily: 'Kenney Pixel', fontSize: '15px', color: UI_SOFT,
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(2e6 + 3);
+      bg.on('pointerdown', () => this.castVote(theme));
+      this.voteBtns[theme] = { bg, label, cnt };
+    });
+  }
+
+  castVote(theme) {
+    if (!this.voteBtns || this.myVote === theme) return;
+    this.myVote = theme;
+    this.sock.emit('voteMap', { theme });
+    this.sound.play('click', { volume: sfxVol(this) });
+    for (const t in this.voteBtns) {
+      const sel = t === theme;
+      this.voteBtns[t].bg.setFillStyle(sel ? UI_BTN_DOWN_TINT : UI_BTN_TINT)
+        .setStrokeStyle(3, sel ? 0xffd94a : 0x1c2b14);
+    }
+  }
+
+  updateVoteCounts(counts) {
+    if (!this.voteBtns) return;
+    for (const t in this.voteBtns) {
+      const n = counts[t] || 0;
+      this.voteBtns[t].cnt.setText(n === 1 ? '1 vote' : n + ' votes');
     }
   }
 
@@ -2067,7 +2130,7 @@ class JungleScene extends Phaser.Scene {
     const btnY = seekY + 28 + Math.min(seekRows.length, 5) * 24 + 36;
     makePxButton(this, CANVAS_W / 2 - 130, btnY, 'PLAY AGAIN', () => {
       this.sound.stopByKey('ambient');
-      this.scene.restart();
+      this.scene.restart({ prevTheme: this.theme.name });   // fresh map each replay
     });
     makePxButton(this, CANVAS_W / 2 + 130, btnY, 'MAIN MENU', () => {
       this.sound.stopByKey('ambient');

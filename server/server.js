@@ -58,6 +58,37 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const shuffle = (arr) => {
+  const b = [...arr];
+  for (let i = b.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [b[i], b[j]] = [b[j], b[i]];
+  }
+  return b;
+};
+// ---- next-map vote helpers (online) ----
+function voteCounts(room) {
+  const c = {};
+  for (const t of (room.voteCandidates || [])) c[t] = 0;
+  for (const v of Object.values(room.votes || {})) if (c[v] !== undefined) c[v]++;
+  return c;
+}
+// 3 maps other than the current and the previously played one.
+function pickVoteCandidates(room) {
+  const exclude = new Set([room.theme, room.prevTheme].filter(Boolean));
+  return shuffle(THEMES.filter(t => !exclude.has(t))).slice(0, 3);
+}
+function tallyVote(room) {
+  const cand = room.voteCandidates || [];
+  if (!cand.length) return pick(THEMES);
+  const c = voteCounts(room);
+  let max = -1, winners = [];
+  for (const t of cand) {
+    if (c[t] > max) { max = c[t]; winners = [t]; }
+    else if (c[t] === max) winners.push(t);
+  }
+  return winners[Math.floor(Math.random() * winners.length)];   // tie -> random of the top
+}
 
 // With 3+ NPC seekers, one walks the perimeter for a full square lap.
 const EDGE_MARGIN = 150;
@@ -159,6 +190,7 @@ function lobbyState(room) {
 // ---------------------------------------------------------------- round flow
 function startMatch(room, io) {
   room.round = 0;
+  room.theme = null; room.prevTheme = null; room.nextTheme = null;   // round 1 rolls fresh
   for (const p of room.players.values()) p.score = 0;
   startRound(room, io);
 }
@@ -166,7 +198,9 @@ function startMatch(room, io) {
 function startRound(room, io) {
   clearTimers(room);
   room.round++;
-  room.theme = pick(THEMES);
+  room.prevTheme = room.theme || null;                 // the map we just left
+  room.theme = room.nextTheme || pick(THEMES);          // voted winner, else random (round 1)
+  room.nextTheme = null;
   room.seed = (Math.random() * 0xffffffff) | 0;
   room.balls = [];
 
@@ -304,7 +338,16 @@ function endRound(room, io, winner) {
     io.to(room.code).emit('matchEnd', { stats });
     io.to(room.code).emit('lobbyUpdate', lobbyState(room));
   } else {
-    addTimer(room, ROUNDEND_LEN, () => startRound(room, io));
+    // between-round vote: offer 3 maps other than the current and previous one
+    room.voteCandidates = pickVoteCandidates(room);
+    room.votes = {};
+    io.to(room.code).emit('mapVote', {
+      candidates: room.voteCandidates, current: room.theme, endsInMs: ROUNDEND_LEN,
+    });
+    addTimer(room, ROUNDEND_LEN, () => {
+      room.nextTheme = tallyVote(room);          // majority wins; ties break randomly
+      startRound(room, io);
+    });
   }
 }
 
@@ -851,6 +894,16 @@ io.on('connection', (socket) => {
     infect(room, target, p, io);
   });
 
+  socket.on('voteMap', (data) => {
+    const room = roomOf(socket);
+    if (!room || room.phase !== 'ROUNDEND' || !data) return;
+    const theme = data.theme;
+    if (!room.voteCandidates || !room.voteCandidates.includes(theme)) return;
+    room.votes = room.votes || {};
+    room.votes[socket.id] = theme;               // one vote per player, changeable
+    io.to(room.code).emit('voteUpdate', { counts: voteCounts(room) });
+  });
+
   socket.on('chirp', () => {
     const room = roomOf(socket);
     const p = room && room.players.get(socket.id);
@@ -915,4 +968,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { evaluateStalkerBuff };
+module.exports = { evaluateStalkerBuff, THEMES, pickVoteCandidates, voteCounts, tallyVote };
