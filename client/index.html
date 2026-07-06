@@ -1659,13 +1659,22 @@ class JungleScene extends Phaser.Scene {
     if (settled) s.setTintFill(tint); else s.setTint(tint);
     s.alpha = 1;
 
-    // Camo cloth: bright when exposed (moving / not yet settled), fading to
-    // nothing as they melt into the ground colour.
+    // Camo cloth: bold in its true biome tones when exposed (moving), then as
+    // they blend it drops to a faint whisper AND recolours toward the blended
+    // ground colour — so a settled hider is a near-solid blob with just a ghost
+    // of the camo pattern breaking up the silhouette in the new colour.
     if (ent.camoOverlay) {
       const ov = ent.camoOverlay;
-      const expose = moving ? 0.92
-        : Phaser.Math.Clamp(1 - ent.stillTimer / 900, 0, 1) * 0.92;
+      const CAMO_FAINT = 0.16;   // how visible the pattern stays once blended
+      const blended = Phaser.Math.Clamp(ent.stillTimer / 900, 0, 1);   // 0 exposed -> 1 blended
+      const expose = moving ? 0.92 : CAMO_FAINT + (0.92 - CAMO_FAINT) * (1 - blended);
       ov.alpha += (expose - ov.alpha) * (1 - Math.exp(-delta * 0.012));
+      // tint lerps white (true camo colours) -> the blended colour, so the
+      // pattern's light/dark shape shows through in the ground tone, not green.
+      const lr = Math.round(255 + (ent.color.r - 255) * blended);
+      const lg = Math.round(255 + (ent.color.g - 255) * blended);
+      const lb = Math.round(255 + (ent.color.b - 255) * blended);
+      ov.setTint(Phaser.Display.Color.GetColor(lr, lg, lb));
       if (ov.alpha < 0.02) { ov.setVisible(false); }
       else {
         ov.setVisible(s.visible);
