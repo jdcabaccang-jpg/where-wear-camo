@@ -1895,17 +1895,44 @@ class JungleScene extends Phaser.Scene {
         }
       }
     };
-    for (let i = 0; i < 26; i++) clusterAt(200 + rng() * 700, 150 + rng() * 620, true, 240);
-    for (let i = 0; i < 16; i++) clusterAt(1550 + rng() * 700, 250 + rng() * 700, true, 260);
-    for (let i = 0; i < 30; i++) clusterAt(rng() * WORLD_W, rng() * WORLD_H, true, 300);
-    for (let i = 0; i < 5; i++) clusterAt(1200 + rng() * 700, 1200 + rng() * 400, false, 320);
+    // Even, map-wide cover via stratified sampling: one jittered cluster per
+    // grid cell so no quadrant is favoured. Cells near the seeker spawn are
+    // thinned along a fade band, leaving the corner open — the seeker starts
+    // with sightlines instead of a wall of foliage, and hiders can't bury
+    // themselves right on top of the spawn.
+    const COLS = 9, ROWS = 7;
+    const cw = WORLD_W / COLS, ch = WORLD_H / ROWS;
+    const SEEK_CLEAR = 340, SEEK_FADE = 820;   // bare radius -> full-density radius
+    const seekFade = (x, y) => {
+      const d = Phaser.Math.Distance.Between(x, y, SEEKER_SPAWN.x, SEEKER_SPAWN.y);
+      if (d < SEEK_CLEAR) return 0;
+      return d >= SEEK_FADE ? 1 : (d - SEEK_CLEAR) / (SEEK_FADE - SEEK_CLEAR);
+    };
+    for (let gx = 0; gx < COLS; gx++) {
+      for (let gy = 0; gy < ROWS; gy++) {
+        const cx = (gx + 0.15 + rng() * 0.7) * cw;
+        const cy = (gy + 0.15 + rng() * 0.7) * ch;
+        if (rng() > seekFade(cx, cy)) continue;   // skip/thin near the spawn
+        const big = rng() < 0.6;
+        clusterAt(cx, cy, big, big ? 220 : 300);
+      }
+    }
+    // a few roaming bush clusters for organic variety (still spawn-aware)
+    for (let i = 0; i < 8; i++) {
+      const x = rng() * WORLD_W, y = rng() * WORLD_H;
+      if (rng() > seekFade(x, y)) continue;
+      clusterAt(x, y, false, 300);
+    }
+    // rocks along the riverbank
     for (let i = 0; i < 14; i++) {
       const x = 620 + rng() * 760, y = 760 + rng() * 280;
       addCover(x, y, 'f' + ROCKS[Math.floor(rng() * ROCKS.length)], null);
     }
+    // grass tufts: even ground detail, kept off the seeker's immediate pocket
     for (let i = 0; i < 120; i++) {
-      const t = this.add.image(rng() * WORLD_W, rng() * WORLD_H,
-        'f' + TUFTS[Math.floor(rng() * TUFTS.length)]).setDepth(-50);
+      const x = rng() * WORLD_W, y = rng() * WORLD_H;
+      if (Phaser.Math.Distance.Between(x, y, SEEKER_SPAWN.x, SEEKER_SPAWN.y) < 240) continue;
+      const t = this.add.image(x, y, 'f' + TUFTS[Math.floor(rng() * TUFTS.length)]).setDepth(-50);
       if (th.tuftTint) t.setTint(th.tuftTint);
     }
   }
