@@ -36,7 +36,8 @@ const STROBE_EVERY = 10000, STROBE_WARN = 1500, STROBE_LEN = 800;
 const CHIRP_COOLDOWN = 1000;
 const MAX_HUMANS = 9;
 
-const THEMES = ['JUNGLE', 'AUTUMN WOODS', 'BADLANDS'];
+// Client renders the map from name + seed, so the server only needs the names.
+const THEMES = ['JUNGLE', 'AUTUMN WOODS', 'BADLANDS', 'PARKING LOT', 'BRICK PLAZA', 'WAREHOUSE', 'HOUSE'];
 const ZONES = [
   { id: 'A', rect: [200, 200, 600, 500] },
   { id: 'B', rect: [600, 750, 800, 300] },

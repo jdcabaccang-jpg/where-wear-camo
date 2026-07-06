@@ -85,27 +85,63 @@ const ONLINE_NAMES = ['jake02', 'greenbean', 'swampqueen', 'Milo', 'xCamoKing',
   'HideNSneak', 'notabot123', 'TTV_Bushman', 'peekaboo_', 'lil_sprout', 'Dmitri',
   'ferngully', 'SneakyPete', 'mudpie', 'ghostedu', 'Wren'];
 
-// ---------------------------------------------------------------- map themes
-// Same generator, different Kenney tile frames + foliage palettes. Frames are
-// from tilesheet_complete.png row 0 (verified): grass 0-3, dirt 4-5, stone 6-8,
-// snow 11, terracotta 12-15, water 18-19. Foliage recolors via tint.
-const MAPS = [
-  { name: 'JUNGLE', bg: 0x3e6b34,
-    base: 0, patches: [1, 2, 3], band: { mostly: [4, 5], rest: [6, 7, 8] },
-    water: [18, 19], treeTint: null, bushTint: null, tuftTint: null },
-  { name: 'AUTUMN WOODS', bg: 0x6b5a2c,
-    base: 0, patches: [4, 5, 2], band: { mostly: [12, 13], rest: [14, 15] },
-    water: [18, 19], treeTint: 0xe08a3a, bushTint: 0xd8913e, tuftTint: 0xcc8844 },
-  { name: 'BADLANDS', bg: 0x8a6a42,
-    base: 4, patches: [5, 6, 12], band: { mostly: [6, 7], rest: [8, 13] },
-    water: [18, 19], treeTint: 0xb08048, bushTint: 0xc09a58, tuftTint: 0xb89050 },
-];
-
+// ---------------------------------------------------------------- cover props
+// Foliage sprites (loaded as fNNN in preload) live in these pools. Tilesheet
+// frame props are referenced by index into the already-loaded 'tiles' sheet
+// (verified: crates 128/129/155/156/179, barrels 205/206/196, bushes
+// 180/181/207/208, hedges 157/233, rocks 235-238, sofas 473/474/476/500/503,
+// chairs 449/450/527/528, tables 505/537/453/479/506, rugs 396/400, kitchen
+// 293/294). Defined before MAPS so themes can reference the foliage pools.
 const TREES_TRUNK  = ['004','005','006','007','008','009','010','011'];
 const TREES_CANOPY = ['037','038','039','040','041','042'];
 const BUSHES       = ['049','050','051','052'];
 const ROCKS        = ['053','054','055'];
 const TUFTS        = ['001','002','003'];
+
+// ---------------------------------------------------------------- map themes
+// One generator, many surfaces. base/patches are floor frames; band+water are
+// the optional river; lines draws parking paint; rugs are floor mats. cover is
+// a weighted prop set — t:'f' picks a foliage image, t:'x' a tilesheet frame,
+// k is the pool to pick from. No walls on any map, so NPC movement stays simple.
+const MAPS = [
+  { name: 'JUNGLE', bg: 0x3e6b34, base: 0, patches: [1, 2, 3],
+    band: { mostly: [4, 5], rest: [6, 7, 8] }, water: [18, 19],
+    ground: { t: 'f', k: TUFTS },
+    cover: [ { t: 'f', k: TREES_TRUNK, w: 3, big: 1 }, { t: 'f', k: TREES_CANOPY, w: 3, big: 1 },
+             { t: 'f', k: BUSHES, w: 4 }, { t: 'f', k: ROCKS, w: 1.5 } ] },
+  { name: 'AUTUMN WOODS', bg: 0x6b5a2c, base: 0, patches: [4, 5, 2],
+    band: { mostly: [12, 13], rest: [14, 15] }, water: [18, 19],
+    ground: { t: 'f', k: TUFTS, tint: 0xcc8844 },
+    cover: [ { t: 'f', k: TREES_TRUNK, tint: 0xe08a3a, w: 3, big: 1 },
+             { t: 'f', k: TREES_CANOPY, tint: 0xe08a3a, w: 3, big: 1 },
+             { t: 'f', k: BUSHES, tint: 0xd8913e, w: 4 }, { t: 'f', k: ROCKS, w: 1.5 } ] },
+  { name: 'BADLANDS', bg: 0x8a6a42, base: 4, patches: [5, 6, 12],
+    band: { mostly: [6, 7], rest: [8, 13] }, water: [18, 19],
+    ground: { t: 'f', k: TUFTS, tint: 0xb89050 },
+    cover: [ { t: 'f', k: TREES_TRUNK, tint: 0xb08048, w: 2, big: 1 },
+             { t: 'f', k: BUSHES, tint: 0xc09a58, w: 3 },
+             { t: 'x', k: [235, 236], w: 2 }, { t: 'f', k: ROCKS, w: 2 } ] },
+  // ---- urban / interior floor-plans (open, no walls) ----
+  { name: 'PARKING LOT', bg: 0x23262a, base: 30, patches: [31, 37, 34], patchDensity: 150,
+    lines: 0xf2c53a, ground: { t: 'x', k: [319], count: 36 },
+    cover: [ { t: 'x', k: [128, 155, 179], w: 4 }, { t: 'x', k: [129, 156], w: 2 },
+             { t: 'x', k: [205, 206, 196], w: 2 }, { t: 'x', k: [236, 237], tint: 0x9aa0a6, w: 1.5 } ] },
+  { name: 'BRICK PLAZA', bg: 0x7a4a30, base: 12, patches: [13, 15, 6],
+    ground: { t: 'f', k: TUFTS, tint: 0xbf8a5a },
+    cover: [ { t: 'x', k: [157, 233], w: 2 }, { t: 'x', k: [180, 181, 207, 208], w: 4 },
+             { t: 'f', k: TREES_CANOPY, w: 2, big: 1 }, { t: 'x', k: [235, 236], w: 1.5 },
+             { t: 'x', k: [506, 537], w: 1 } ] },
+  { name: 'WAREHOUSE', bg: 0x2f3236, base: 6, patches: [7, 8, 34], patchDensity: 180,
+    ground: { t: 'x', k: [319], count: 30 },
+    cover: [ { t: 'x', k: [128, 129, 155, 156, 179], w: 6 }, { t: 'x', k: [205, 206, 196], w: 3 },
+             { t: 'x', k: [236, 237, 238], tint: 0x8f969c, w: 1.5 },
+             { t: 'x', k: [453, 454], tint: 0x8a7a5a, w: 1 } ] },
+  { name: 'HOUSE', bg: 0x5a4230, base: 41, patches: [42, 68, 69], patchDensity: 120,
+    rugs: [ { k: 396, s: 1.5 }, { k: 400, s: 1.5 } ],
+    cover: [ { t: 'x', k: [473, 474, 476], w: 2 }, { t: 'x', k: [500, 503], w: 1.5 },
+             { t: 'x', k: [449, 450, 527, 528], w: 2 }, { t: 'x', k: [505, 537, 453, 479, 506], w: 2 },
+             { t: 'x', k: [180, 207], w: 1.5 }, { t: 'x', k: [293, 294], w: 1 }, { t: 'x', k: [128, 129], w: 1 } ] },
+];
 
 const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0 ||
                  location.search.includes('touch');
@@ -701,7 +737,7 @@ class JungleScene extends Phaser.Scene {
 
     this.bushes = [];          // ALL cover (trees, bushes, rocks) — no physics
     this.buildTerrain();
-    this.buildFoliage();
+    this.buildCover();
     this.drawZones();
 
     // ---- round phases: GRACE (hiders hide, invisible to seekers) -> SEEK
@@ -1620,8 +1656,10 @@ class JungleScene extends Phaser.Scene {
       }
     }
     if (best) {
-      // themed maps tint their foliage — blend to the DISPLAYED color
-      const c = this.avgColor(best.texture.key);
+      // themed maps tint their cover — blend to the DISPLAYED color. Pass the
+      // frame so tilesheet props (crates/sofas) sample the right frame, not the
+      // whole sheet.
+      const c = this.avgColor(best.texture.key, best.frame.name);
       if (best.isTinted && best.tintTopLeft !== 0xffffff) {
         const t = Phaser.Display.Color.IntegerToColor(best.tintTopLeft);
         return { r: c.r * t.red / 255, g: c.g * t.green / 255, b: c.b * t.blue / 255 };
@@ -1849,57 +1887,84 @@ class JungleScene extends Phaser.Scene {
       this.add.image(tx * TILE + TILE / 2, ty * TILE + TILE / 2, 'tiles', f).setDepth(depth);
       if (this.groundGrid[ty] && this.groundGrid[ty][tx] !== undefined) this.groundGrid[ty][tx] = f;
     };
-    for (let i = 0; i < 260; i++) {
+    for (let i = 0; i < (th.patchDensity || 260); i++) {
       const f = th.patches[Math.floor(rng() * th.patches.length)];
       paint(Math.floor(rng() * WORLD_W / TILE), Math.floor(rng() * WORLD_H / TILE), f, -99);
     }
-    for (let tx = Math.floor(600 / TILE); tx <= Math.floor(1400 / TILE); tx++) {
-      for (let ty = Math.floor(750 / TILE); ty <= Math.floor(1050 / TILE); ty++) {
-        const f = rng() < 0.75
-          ? th.band.mostly[Math.floor(rng() * th.band.mostly.length)]
-          : th.band.rest[Math.floor(rng() * th.band.rest.length)];
-        paint(tx, ty, f, -98);
+    if (th.band) {
+      for (let tx = Math.floor(600 / TILE); tx <= Math.floor(1400 / TILE); tx++) {
+        for (let ty = Math.floor(750 / TILE); ty <= Math.floor(1050 / TILE); ty++) {
+          const f = rng() < 0.75
+            ? th.band.mostly[Math.floor(rng() * th.band.mostly.length)]
+            : th.band.rest[Math.floor(rng() * th.band.rest.length)];
+          paint(tx, ty, f, -98);
+        }
       }
     }
-    for (let tx = Math.floor(640 / TILE); tx <= Math.floor(1360 / TILE); tx++) {
-      paint(tx, Math.floor(880 / TILE), th.water[Math.floor(this.rng() * th.water.length)], -97);
+    if (th.water) {
+      for (let tx = Math.floor(640 / TILE); tx <= Math.floor(1360 / TILE); tx++) {
+        paint(tx, Math.floor(880 / TILE), th.water[Math.floor(rng() * th.water.length)], -97);
+      }
+    }
+    if (th.lines) this.drawParkingLines(th.lines);
+  }
+
+  // Painted parking bays for the asphalt lot — a few rectangular lots of evenly
+  // spaced stalls, drawn as faded lane paint above the floor, below the cover.
+  drawParkingLines(color) {
+    const g = this.add.graphics().setDepth(-96);
+    g.lineStyle(5, color, 0.5);
+    const lots = [[480, 260, 880, 210], [520, 1140, 1080, 250], [1560, 620, 640, 560]];
+    for (const [x, y, w, h] of lots) {
+      const n = Math.max(1, Math.round(w / 115));
+      for (let i = 0; i <= n; i++) { const lx = x + i * (w / n); g.beginPath(); g.moveTo(lx, y); g.lineTo(lx, y + h); g.strokePath(); }
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + w, y); g.strokePath();
+      g.beginPath(); g.moveTo(x, y + h); g.lineTo(x + w, y + h); g.strokePath();
     }
   }
 
-  buildFoliage() {
+  buildCover() {
     const rng = this.rng;
     const th = this.theme;
-    const clearings = [...HIDER_SPAWNS, SEEKER_SPAWN];
+    const clearings = HIDER_SPAWNS;   // keep hider spawns clear of dense cover
     // Scenery has NO physics bodies — nothing can snag players or NPCs.
-    const addCover = (x, y, key, tint) => {
-      const img = this.add.image(x, y, key).setDepth(y);
-      if (tint) img.setTint(tint);
+    const pick = (set) => {
+      let tot = 0; for (const e of set) tot += e.w || 1;
+      let r = rng() * tot;
+      for (const e of set) { r -= e.w || 1; if (r <= 0) return e; }
+      return set[set.length - 1];
+    };
+    const place = (x, y, e, depth) => {
+      const k = e.k[Math.floor(rng() * e.k.length)];
+      const img = e.t === 'x' ? this.add.image(x, y, 'tiles', k) : this.add.image(x, y, 'f' + k);
+      img.setDepth(depth == null ? y : depth);
+      if (e.tint) img.setTint(e.tint);
+      if (e.s) img.setScale(e.s);
       this.bushes.push(img);
       return img;
     };
-    const clusterAt = (cx, cy, big, spread) => {
+    const clusterAt = (cx, cy, spread) => {
       const n = 3 + Math.floor(rng() * 4);
       for (let i = 0; i < n; i++) {
         const x = cx + (rng() - 0.5) * spread;
         const y = cy + (rng() - 0.5) * spread;
         if (x < 40 || x > WORLD_W - 40 || y < 40 || y > WORLD_H - 40) continue;
         if (clearings.some(c => Phaser.Math.Distance.Between(x, y, c.x, c.y) < 110)) continue;
-        if (big && rng() < 0.55) {
-          const key = 'f' + (rng() < 0.5
-            ? TREES_TRUNK[Math.floor(rng() * TREES_TRUNK.length)]
-            : TREES_CANOPY[Math.floor(rng() * TREES_CANOPY.length)]);
-          addCover(x, y, key, th.treeTint);
-        } else {
-          const key = 'f' + BUSHES[Math.floor(rng() * BUSHES.length)];
-          addCover(x, y, key, th.bushTint);
-        }
+        place(x, y, pick(th.cover));
       }
     };
+    // rugs (house): large floor mats laid down first, under the furniture
+    if (th.rugs) {
+      for (let i = 0; i < 7; i++) {
+        const x = 200 + rng() * (WORLD_W - 400), y = 200 + rng() * (WORLD_H - 400);
+        const r = th.rugs[Math.floor(rng() * th.rugs.length)];
+        this.add.image(x, y, 'tiles', r.k).setScale(r.s || 1.4).setDepth(-58).setAlpha(0.92);
+      }
+    }
     // Even, map-wide cover via stratified sampling: one jittered cluster per
     // grid cell so no quadrant is favoured. Cells near the seeker spawn are
     // thinned along a fade band, leaving the corner open — the seeker starts
-    // with sightlines instead of a wall of foliage, and hiders can't bury
-    // themselves right on top of the spawn.
+    // with sightlines, and hiders can't bury themselves right on the spawn.
     const COLS = 9, ROWS = 7;
     const cw = WORLD_W / COLS, ch = WORLD_H / ROWS;
     const SEEK_CLEAR = 340, SEEK_FADE = 820;   // bare radius -> full-density radius
@@ -1913,31 +1978,31 @@ class JungleScene extends Phaser.Scene {
         const cx = (gx + 0.15 + rng() * 0.7) * cw;
         const cy = (gy + 0.15 + rng() * 0.7) * ch;
         if (rng() > seekFade(cx, cy)) continue;   // skip/thin near the spawn
-        const big = rng() < 0.6;
-        clusterAt(cx, cy, big, big ? 220 : 300);
+        clusterAt(cx, cy, rng() < 0.6 ? 220 : 300);
       }
     }
-    // a few roaming bush clusters for organic variety (still spawn-aware)
+    // a few roaming clusters for organic variety (still spawn-aware)
     for (let i = 0; i < 8; i++) {
       const x = rng() * WORLD_W, y = rng() * WORLD_H;
       if (rng() > seekFade(x, y)) continue;
-      clusterAt(x, y, false, 300);
+      clusterAt(x, y, 300);
     }
-    // rocks along the riverbank
-    for (let i = 0; i < 14; i++) {
-      const x = 620 + rng() * 760, y = 760 + rng() * 280;
-      addCover(x, y, 'f' + ROCKS[Math.floor(rng() * ROCKS.length)], null);
-    }
-    // grass tufts: even ground detail, kept off the seeker's immediate pocket
-    for (let i = 0; i < 120; i++) {
-      const x = rng() * WORLD_W, y = rng() * WORLD_H;
-      if (Phaser.Math.Distance.Between(x, y, SEEKER_SPAWN.x, SEEKER_SPAWN.y) < 240) continue;
-      const t = this.add.image(x, y, 'f' + TUFTS[Math.floor(rng() * TUFTS.length)]).setDepth(-50);
-      if (th.tuftTint) t.setTint(th.tuftTint);
+    // ground detail (tufts / oil stains), kept off the seeker's pocket
+    if (th.ground) {
+      const gr = th.ground, cnt = gr.count || 120;
+      for (let i = 0; i < cnt; i++) {
+        const x = rng() * WORLD_W, y = rng() * WORLD_H;
+        if (Phaser.Math.Distance.Between(x, y, SEEKER_SPAWN.x, SEEKER_SPAWN.y) < 240) continue;
+        const k = gr.k[Math.floor(rng() * gr.k.length)];
+        const t = (gr.t === 'x' ? this.add.image(x, y, 'tiles', k) : this.add.image(x, y, 'f' + k)).setDepth(-50);
+        if (gr.tint) t.setTint(gr.tint);
+        if (gr.t === 'x') t.setAlpha(0.45).setScale(0.7);   // stains stay subtle
+      }
     }
   }
 
   drawZones() {
+    if (!this.theme.band) return;   // faint zone tints are a nature-map flourish
     const g = this.add.graphics().setDepth(-60);
     for (const z of ZONES) {
       g.fillStyle(z.color, 0.08);
