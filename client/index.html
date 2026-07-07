@@ -1174,24 +1174,45 @@ class JungleScene extends Phaser.Scene {
     this.voteBtns = {};
     const n = this.voteCandidates.length;
     if (!n) return;
-    const bw = 196, gap = 16, totalW = n * bw + (n - 1) * gap;
+    const bw = 200, gap = 16, totalW = n * bw + (n - 1) * gap;
     const startX = CANVAS_W / 2 - totalW / 2 + bw / 2;
     const y = this.voteAnchorY;
     this.voteCandidates.forEach((theme, i) => {
       const x = startX + i * (bw + gap);
-      const bg = this.add.rectangle(x, y, bw, 48, UI_BTN_TINT)
+      const bg = this.add.rectangle(x, y, bw, 54, UI_BTN_TINT)
         .setStrokeStyle(3, 0x1c2b14)
         .setScrollFactor(0).setDepth(2e6 + 2).setInteractive({ useHandCursor: true });
-      const label = this.add.text(x, y - 8, theme, {
-        fontFamily: 'Kenney Pixel', fontSize: '22px', color: UI_TEXT,
+      const def = MAPS.find(m => m.name === theme) || MAPS[0];
+      const swatch = this.mapSwatch(x - bw / 2 + 32, y, def, 40);
+      const tx = x - bw / 2 + 58;   // text sits to the right of the swatch
+      const label = this.add.text(tx, y - 9, theme, {
+        fontFamily: 'Kenney Pixel', fontSize: '18px', color: UI_TEXT,
         stroke: '#1c2b14', strokeThickness: 3,
-      }).setOrigin(0.5).setScrollFactor(0).setDepth(2e6 + 3);
-      const cnt = this.add.text(x, y + 13, '0 votes', {
+      }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(2e6 + 3);
+      const cnt = this.add.text(tx, y + 13, '0 votes', {
         fontFamily: 'Kenney Pixel', fontSize: '15px', color: UI_SOFT,
-      }).setOrigin(0.5).setScrollFactor(0).setDepth(2e6 + 3);
+      }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(2e6 + 3);
       bg.on('pointerdown', () => this.castVote(theme));
-      this.voteBtns[theme] = { bg, label, cnt };
+      this.voteBtns[theme] = { bg, label, cnt, swatch };
     });
+  }
+
+  // A tiny map preview: the floor tile with one representative cover prop on it.
+  mapSwatch(x, y, def, size) {
+    const objs = [];
+    objs.push(this.add.image(x, y, 'tiles', def.base)
+      .setDisplaySize(size, size).setScrollFactor(0).setDepth(2e6 + 3));
+    const c = (def.cover || []).slice().sort((a, b) => (b.w || 1) - (a.w || 1))[0];
+    if (c && c.k && c.k.length) {
+      const k = c.k[0];
+      const prop = c.t === 'x' ? this.add.image(x, y, 'tiles', k) : this.add.image(x, y, 'f' + k);
+      prop.setDisplaySize(size * 0.6, size * 0.6).setScrollFactor(0).setDepth(2e6 + 4);
+      if (c.tint) prop.setTint(c.tint);
+      objs.push(prop);
+    }
+    objs.push(this.add.rectangle(x, y, size, size).setStrokeStyle(2, 0x1c2b14)
+      .setScrollFactor(0).setDepth(2e6 + 5));
+    return objs;
   }
 
   castVote(theme) {
