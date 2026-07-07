@@ -121,27 +121,37 @@ const MAPS = [
     cover: [ { t: 'f', k: TREES_TRUNK, tint: 0xb08048, w: 2, big: 1 },
              { t: 'f', k: BUSHES, tint: 0xc09a58, w: 3 },
              { t: 'x', k: [235, 236], w: 2 }, { t: 'f', k: ROCKS, w: 2 } ] },
-  // ---- urban / interior floor-plans (open, no walls) ----
+  // ---- urban / interior floor-plans. Structures are VISUAL prefabs (walls,
+  //      cars, fountains) with no collision; `scatter` thins the random cover
+  //      so the hand-placed layout reads clearly. ----
   { name: 'PARKING LOT', bg: 0x23262a, base: 30, patches: [31, 37, 34], patchDensity: 150,
-    lines: 0xf2c53a, ground: { t: 'x', k: [319], count: 36 },
+    lines: 0xf2c53a, prefab: 'lot', scatter: 0.5, ground: { t: 'x', k: [319], count: 36 },
     cover: [ { t: 'x', k: [128, 155, 179], w: 4 }, { t: 'x', k: [129, 156], w: 2 },
              { t: 'x', k: [205, 206, 196], w: 2 }, { t: 'x', k: [236, 237], tint: 0x9aa0a6, w: 1.5 } ] },
-  { name: 'BRICK PLAZA', bg: 0x7a4a30, base: 12, patches: [13, 15, 6],
+  { name: 'BRICK PLAZA', bg: 0x7a4a30, base: 12, patches: [13, 15, 6], prefab: 'plaza', scatter: 0.55,
     ground: { t: 'f', k: TUFTS, tint: 0xbf8a5a },
     cover: [ { t: 'x', k: [157, 233], w: 2 }, { t: 'x', k: [180, 181, 207, 208], w: 4 },
              { t: 'f', k: TREES_CANOPY, w: 2, big: 1 }, { t: 'x', k: [235, 236], w: 1.5 },
              { t: 'x', k: [506, 537], w: 1 } ] },
-  { name: 'WAREHOUSE', bg: 0x2f3236, base: 6, patches: [7, 8, 34], patchDensity: 180,
+  { name: 'WAREHOUSE', bg: 0x2f3236, base: 6, patches: [7, 8, 34], patchDensity: 180, prefab: 'warehouse', scatter: 0.4,
     ground: { t: 'x', k: [319], count: 30 },
     cover: [ { t: 'x', k: [128, 129, 155, 156, 179], w: 6 }, { t: 'x', k: [205, 206, 196], w: 3 },
              { t: 'x', k: [236, 237, 238], tint: 0x8f969c, w: 1.5 },
              { t: 'x', k: [453, 454], tint: 0x8a7a5a, w: 1 } ] },
-  { name: 'HOUSE', bg: 0x5a4230, base: 41, patches: [42, 68, 69], patchDensity: 120,
-    rugs: [ { k: 396, s: 1.5 }, { k: 400, s: 1.5 } ],
+  { name: 'HOUSE', bg: 0x5a4230, base: 41, patches: [42, 68, 69], patchDensity: 120, prefab: 'house', scatter: 0.28,
     cover: [ { t: 'x', k: [473, 474, 476], w: 2 }, { t: 'x', k: [500, 503], w: 1.5 },
              { t: 'x', k: [449, 450, 527, 528], w: 2 }, { t: 'x', k: [505, 537, 453, 479, 506], w: 2 },
              { t: 'x', k: [180, 207], w: 1.5 }, { t: 'x', k: [293, 294], w: 1 }, { t: 'x', k: [128, 129], w: 1 } ] },
 ];
+
+// Parking-lot bays (shared by the painted lines and the parked cars) + a car
+// palette. Rows sit clear of the seeker spawn at the top-left corner.
+const PARKING_LOTS = [
+  [440, 300, 900, 132], [440, 486, 900, 132],
+  [520, 1140, 1000, 132], [520, 1326, 1000, 132],
+  [1600, 640, 560, 132], [1600, 826, 560, 132], [1600, 1012, 560, 132],
+];
+const CAR_COLORS = [0xc0392b, 0x2980b9, 0xdfe6e9, 0x57606a, 0x2d3436, 0x0fb99a, 0xd35400, 0x8e6fc0];
 
 const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0 ||
                  location.search.includes('touch');
@@ -1998,8 +2008,7 @@ class JungleScene extends Phaser.Scene {
   drawParkingLines(color) {
     const g = this.add.graphics().setDepth(-96);
     g.lineStyle(5, color, 0.5);
-    const lots = [[480, 260, 880, 210], [520, 1140, 1080, 250], [1560, 620, 640, 560]];
-    for (const [x, y, w, h] of lots) {
+    for (const [x, y, w, h] of PARKING_LOTS) {
       const n = Math.max(1, Math.round(w / 115));
       for (let i = 0; i <= n; i++) { const lx = x + i * (w / n); g.beginPath(); g.moveTo(lx, y); g.lineTo(lx, y + h); g.strokePath(); }
       g.beginPath(); g.moveTo(x, y); g.lineTo(x + w, y); g.strokePath();
@@ -2037,8 +2046,14 @@ class JungleScene extends Phaser.Scene {
         place(x, y, pick(th.cover));
       }
     };
-    // rugs (house): large floor mats laid down first, under the furniture
-    if (th.rugs) {
+    // hand-placed prefab structures (visual walls/cars/fountain + logical props)
+    if (th.prefab === 'house') this.buildHouseRooms();
+    else if (th.prefab === 'warehouse') this.buildWarehouseAisles();
+    else if (th.prefab === 'lot') this.buildParkingCars();
+    else if (th.prefab === 'plaza') this.buildPlazaGarden();
+    const scat = th.scatter == null ? 1 : th.scatter;   // thin scatter on structured maps
+    // rugs (scatter-style, only when a map has no prefab layout of its own)
+    if (th.rugs && !th.prefab) {
       for (let i = 0; i < 7; i++) {
         const x = 200 + rng() * (WORLD_W - 400), y = 200 + rng() * (WORLD_H - 400);
         const r = th.rugs[Math.floor(rng() * th.rugs.length)];
@@ -2061,14 +2076,14 @@ class JungleScene extends Phaser.Scene {
       for (let gy = 0; gy < ROWS; gy++) {
         const cx = (gx + 0.15 + rng() * 0.7) * cw;
         const cy = (gy + 0.15 + rng() * 0.7) * ch;
-        if (rng() > seekFade(cx, cy)) continue;   // skip/thin near the spawn
+        if (rng() > seekFade(cx, cy) * scat) continue;   // skip/thin near spawn + on prefab maps
         clusterAt(cx, cy, rng() < 0.6 ? 220 : 300);
       }
     }
     // a few roaming clusters for organic variety (still spawn-aware)
     for (let i = 0; i < 8; i++) {
       const x = rng() * WORLD_W, y = rng() * WORLD_H;
-      if (rng() > seekFade(x, y)) continue;
+      if (rng() > seekFade(x, y) * scat) continue;
       clusterAt(x, y, 300);
     }
     // ground detail (tufts / oil stains), kept off the seeker's pocket
@@ -2083,6 +2098,195 @@ class JungleScene extends Phaser.Scene {
         if (gr.t === 'x') t.setAlpha(0.45).setScale(0.7);   // stains stay subtle
       }
     }
+  }
+
+  // ---------- prefab structures (visual only — no collision) ----------
+  // Place a tilesheet/foliage prop that also counts as cover (blend + hiding).
+  placeProp(x, y, t, k, opts = {}) {
+    const img = t === 'x' ? this.add.image(x, y, 'tiles', k) : this.add.image(x, y, 'f' + k);
+    img.setDepth(opts.depth == null ? y : opts.depth);
+    if (opts.tint) img.setTint(opts.tint);
+    if (opts.scale) img.setScale(opts.scale);
+    if (opts.angle) img.setAngle(opts.angle);
+    if (opts.cover !== false) this.bushes.push(img);
+    return img;
+  }
+
+  // Visual wall segments (thin filled rects). Doors leave a centred gap.
+  wallSeg(x1, y1, x2, y2, color, thick) {
+    const g = this.add.graphics().setDepth(-55);
+    g.fillStyle(color, 1);
+    if (Math.abs(y1 - y2) < 1) g.fillRect(Math.min(x1, x2), y1 - thick / 2, Math.abs(x2 - x1), thick);
+    else g.fillRect(x1 - thick / 2, Math.min(y1, y2), thick, Math.abs(y2 - y1));
+  }
+  wallH(x1, x2, y, color, thick, door) {
+    if (!door) return this.wallSeg(x1, y, x2, y, color, thick);
+    const dx = x1 + (x2 - x1) * door.at, hw = door.w / 2;
+    this.wallSeg(x1, y, dx - hw, y, color, thick);
+    this.wallSeg(dx + hw, y, x2, y, color, thick);
+  }
+  wallV(y1, y2, x, color, thick, door) {
+    if (!door) return this.wallSeg(x, y1, x, y2, color, thick);
+    const dy = y1 + (y2 - y1) * door.at, hw = door.w / 2;
+    this.wallSeg(x, y1, x, dy - hw, color, thick);
+    this.wallSeg(x, dy + hw, x, y2, color, thick);
+  }
+
+  // ---- HOUSE: a 6-room floor plan with furniture arranged per room ----
+  buildHouseRooms() {
+    const WALL = 0x5a3d28, TH = 16;
+    const L = 130, R = 2270, T = 130, B = 1670, cx1 = 950, cx2 = 1610, cy1 = 900;
+    this.add.tileSprite((L + R) / 2, (T + B) / 2, R - L, B - T, 'tiles', 42).setDepth(-96).setAlpha(0.5);
+    this.wallH(L, R, T, WALL, TH);
+    this.wallH(L, R, B, WALL, TH, { at: 0.5, w: 130 });   // front door
+    this.wallV(T, B, L, WALL, TH);
+    this.wallV(T, B, R, WALL, TH);
+    this.wallV(T, cy1, cx1, WALL, TH, { at: 0.55, w: 96 });
+    this.wallV(cy1, B, cx1, WALL, TH, { at: 0.5, w: 96 });
+    this.wallV(T, cy1, cx2, WALL, TH, { at: 0.55, w: 96 });
+    this.wallV(cy1, B, cx2, WALL, TH, { at: 0.5, w: 96 });
+    this.wallH(L, cx1, cy1, WALL, TH, { at: 0.5, w: 96 });
+    this.wallH(cx1, cx2, cy1, WALL, TH, { at: 0.5, w: 96 });
+    this.wallH(cx2, R, cy1, WALL, TH, { at: 0.5, w: 96 });
+    const rooms = [
+      [L, T, cx1, cy1, 'living'], [cx1, T, cx2, cy1, 'kitchen'], [cx2, T, R, cy1, 'bed'],
+      [L, cy1, cx1, B, 'dining'], [cx1, cy1, cx2, B, 'bed'], [cx2, cy1, R, B, 'bath'],
+    ];
+    for (const [x1, y1, x2, y2, type] of rooms) this.furnishRoom(x1, y1, x2, y2, type);
+  }
+  furnishRoom(x1, y1, x2, y2, type) {
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    const in1 = x1 + 70, in2 = x2 - 70, iny1 = y1 + 70, iny2 = y2 - 70;
+    const rug = (k) => this.add.image(cx, cy, 'tiles', k).setScale(1.7).setDepth(-54).setAlpha(0.9);
+    if (type === 'living') {
+      rug(400);
+      this.placeProp(cx, iny1 + 20, 'x', 474);
+      this.placeProp(in1 + 20, cy, 'x', 476, { angle: 90 });
+      this.placeProp(cx, cy + 20, 'x', 505);
+      this.placeProp(in2 - 10, iny2 - 10, 'x', 180);
+    } else if (type === 'kitchen') {
+      for (let i = 0; i < 3; i++) this.placeProp(in1 + 20 + i * 62, iny1 + 20, 'x', i % 2 ? 294 : 293);
+      this.placeProp(cx, cy + 30, 'x', 537);
+      this.placeProp(cx - 44, cy + 30, 'x', 527, { angle: 90 });
+      this.placeProp(cx + 44, cy + 30, 'x', 528, { angle: -90 });
+    } else if (type === 'bed') {
+      this.drawBed(cx, iny1 + 44, 150, 112);
+      this.placeProp(in1 + 20, iny1 + 34, 'x', 453);
+      rug(396);
+      this.placeProp(in2 - 20, iny2 - 20, 'x', 207);
+    } else if (type === 'dining') {
+      rug(400);
+      this.placeProp(cx, cy, 'x', 505);
+      this.placeProp(cx, cy - 54, 'x', 527);
+      this.placeProp(cx, cy + 54, 'x', 528, { angle: 180 });
+      this.placeProp(cx - 54, cy, 'x', 527, { angle: 90 });
+      this.placeProp(cx + 54, cy, 'x', 528, { angle: -90 });
+    } else {   // bath
+      this.placeProp(in1 + 20, iny1 + 20, 'x', 294);
+      rug(400);
+      this.placeProp(in2 - 20, iny2 - 20, 'x', 180);
+    }
+  }
+  drawBed(cx, cy, w, h) {
+    const g = this.add.graphics().setDepth(cy);
+    g.fillStyle(0x000000, 0.15); g.fillRoundedRect(cx - w / 2 + 3, cy - h / 2 + 4, w, h, 8);
+    g.fillStyle(0x6b4a2e, 1); g.fillRoundedRect(cx - w / 2, cy - h / 2, w, h, 8);
+    g.fillStyle(0x4a90c2, 1); g.fillRoundedRect(cx - w / 2 + 6, cy - h / 2 + 24, w - 12, h - 30, 6);
+    g.fillStyle(0xf2f2f2, 1); g.fillRoundedRect(cx - w / 2 + 12, cy - h / 2 + 7, w - 24, 20, 4);
+  }
+
+  // ---- WAREHOUSE: perimeter wall + shelving rows (aisles) + office ----
+  buildWarehouseAisles() {
+    const rng = this.rng, WALL = 0x3d4247, TH = 18;
+    const L = 150, R = 2250, T = 150, B = 1650;
+    this.add.tileSprite((L + R) / 2, (T + B) / 2, R - L, B - T, 'tiles', 8).setDepth(-96).setAlpha(0.4);
+    this.wallH(L, R, T, WALL, TH);
+    this.wallH(L, R, B, WALL, TH, { at: 0.5, w: 190 });   // roller door
+    this.wallV(T, B, L, WALL, TH, { at: 0.18, w: 120 });
+    this.wallV(T, B, R, WALL, TH);
+    const rows = 4, rowGap = (B - T - 160) / (rows - 1), midX = (L + R) / 2;
+    for (let r = 0; r < rows; r++) {
+      const y = T + 130 + rowGap * r;
+      for (let x = L + 130; x < R - 130; x += 92) {
+        if (Math.abs(x - midX) < 100) continue;   // central cross-aisle
+        const roll = rng();
+        if (roll < 0.72) this.placeProp(x, y, 'x', [128, 129, 155, 156, 179][Math.floor(rng() * 5)]);
+        else if (roll < 0.9) this.placeProp(x, y, 'x', [205, 206][Math.floor(rng() * 2)]);
+        if (rng() < 0.35) this.placeProp(x + (rng() - 0.5) * 18, y - 34, 'x', [129, 156][Math.floor(rng() * 2)], { scale: 0.9 });
+      }
+    }
+    const ox = R - 360, oy = T + 30;               // office corner (top-right)
+    this.wallH(ox, R - TH, oy + 220, WALL, 12, { at: 0.5, w: 80 });
+    this.wallV(oy, oy + 220, ox, WALL, 12, { at: 0.5, w: 80 });
+    this.placeProp(ox + 120, oy + 80, 'x', 479);
+    this.placeProp(ox + 120, oy + 140, 'x', 450, { angle: 180 });
+  }
+
+  // ---- PARKING LOT: cars parked in the painted stalls + a booth ----
+  buildParkingCars() {
+    const rng = this.rng;
+    for (const [x, y, w, h] of PARKING_LOTS) {
+      const n = Math.max(1, Math.round(w / 115)), sw = w / n;
+      for (let i = 0; i < n; i++) {
+        if (rng() < 0.32) continue;   // ~68% occupancy
+        this.drawCar(x + sw * (i + 0.5), y + h * 0.5, Math.min(sw * 0.6, 46), h * 0.66,
+          CAR_COLORS[Math.floor(rng() * CAR_COLORS.length)]);
+      }
+    }
+    this.placeProp(2150, 300, 'x', 128, { tint: 0x3f7d3f });   // dumpster
+    this.placeProp(2190, 352, 'x', 155, { tint: 0x3f7d3f });
+    const bx = 300, by = 1500;                                 // attendant booth
+    this.add.tileSprite(bx + 75, by + 60, 150, 120, 'tiles', 6).setDepth(-96);
+    this.wallH(bx, bx + 150, by, 0x6a6f75, 12);
+    this.wallV(by, by + 120, bx, 0x6a6f75, 12);
+    this.wallV(by, by + 120, bx + 150, 0x6a6f75, 12, { at: 0.5, w: 50 });
+  }
+  drawCar(cx, cy, w, h, color) {
+    const g = this.add.graphics().setDepth(cy);
+    g.fillStyle(0x000000, 0.18); g.fillRoundedRect(cx - w / 2 + 3, cy - h / 2 + 4, w, h, 7);
+    g.fillStyle(color, 1); g.fillRoundedRect(cx - w / 2, cy - h / 2, w, h, 7);
+    g.fillStyle(0x18222e, 0.55);
+    g.fillRoundedRect(cx - w * 0.36, cy - h * 0.26, w * 0.72, h * 0.24, 4);
+    g.fillRoundedRect(cx - w * 0.36, cy + h * 0.04, w * 0.72, h * 0.22, 4);
+    g.fillStyle(0xfff2a0, 0.7);
+    g.fillRect(cx - w * 0.34, cy - h * 0.47, w * 0.2, 5);
+    g.fillRect(cx + w * 0.14, cy - h * 0.47, w * 0.2, 5);
+  }
+
+  // ---- BRICK PLAZA: central fountain + symmetric hedge beds + benches ----
+  buildPlazaGarden() {
+    const CX = 1200, CY = 900;
+    this.drawFountain(CX, CY);
+    for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) this.drawGardenBed(CX + sx * 440, CY + sy * 360);
+    this.placeProp(CX, CY - 190, 'x', 506);
+    this.placeProp(CX, CY + 190, 'x', 506, { angle: 180 });
+    this.placeProp(CX - 210, CY, 'x', 537, { angle: 90 });
+    this.placeProp(CX + 210, CY, 'x', 537, { angle: -90 });
+    for (const [px, py] of [[320, 320], [2080, 320], [320, 1480], [2080, 1480]]) {
+      this.placeProp(px, py, 'x', 157); this.placeProp(px + 44, py + 30, 'x', 233);
+    }
+  }
+  drawFountain(cx, cy) {
+    const g = this.add.graphics().setDepth(cy);
+    g.fillStyle(0x000000, 0.15); g.fillCircle(cx + 4, cy + 6, 96);
+    g.fillStyle(0x9298a0, 1); g.fillCircle(cx, cy, 94);
+    g.fillStyle(0x767c84, 1); g.fillCircle(cx, cy, 82);
+    g.fillStyle(0x3f7fbf, 1); g.fillCircle(cx, cy, 64);
+    g.fillStyle(0x5aa0da, 0.8); g.fillCircle(cx, cy, 40);
+    g.fillStyle(0x9298a0, 1); g.fillCircle(cx, cy, 16);
+  }
+  drawGardenBed(cx, cy) {
+    const w = 260, h = 150;
+    this.add.graphics().setDepth(-56).fillStyle(0x6b4a2e, 1).fillRect(cx - w / 2, cy - h / 2, w, h);
+    for (let x = cx - w / 2 + 22; x <= cx + w / 2 - 22; x += 44) {
+      this.placeProp(x, cy - h / 2 + 16, 'x', 181, { scale: 0.7 });
+      this.placeProp(x, cy + h / 2 - 16, 'x', 181, { scale: 0.7 });
+    }
+    for (let y = cy - h / 2 + 44; y <= cy + h / 2 - 44; y += 44) {
+      this.placeProp(cx - w / 2 + 16, y, 'x', 180, { scale: 0.7 });
+      this.placeProp(cx + w / 2 - 16, y, 'x', 180, { scale: 0.7 });
+    }
+    this.placeProp(cx, cy, 'x', 210, { scale: 0.8 });
   }
 
   drawZones() {
