@@ -1,0 +1,1715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Where/Wear Camo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.60.0/phaser.min.js"></script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  /* Shell: fixed 1280x720 stage, map renders under UI. No icon libraries. */
+  :root {
+    --bg-deep: #0a100a;
+    --panel: rgba(12, 18, 12, 0.92);
+    --panel-edge: #2a3d28;
+    --line: #1f2e1d;
+    --text: #d8e0d4;
+    --muted: #7a8a74;
+    --accent: #8bbf6a;
+    --accent-dim: #3d5c36;
+    --sand: #c4a46a;
+    --seeker: #e06a20;
+    --danger: #9a3030;
+    --host: #d4b84a;
+    --focus: #a8d48a;
+    --mono: "Consolas", "Lucida Console", "Courier New", monospace;
+    --ui: "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100vh; overflow: hidden;
+    background: #060806;
+    font-family: var(--ui);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  #wrap {
+    position: relative; width: 1280px; height: 720px; margin: 0 auto;
+    box-shadow: 0 0 0 1px #000, 0 12px 48px rgba(0,0,0,0.55);
+  }
+  #game-container { position: absolute; inset: 0; }
+
+  .hidden { display: none !important; }
+
+  /* ---------- Shared overlays ---------- */
+  .overlay {
+    position: absolute; inset: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+    background:
+      linear-gradient(180deg, rgba(4,8,4,0.55) 0%, rgba(4,8,4,0.78) 45%, rgba(4,8,4,0.88) 100%);
+    color: var(--text);
+  }
+  .overlay.scrim-heavy {
+    background:
+      radial-gradient(ellipse 70% 60% at 50% 42%, rgba(20,32,18,0.35) 0%, transparent 70%),
+      linear-gradient(180deg, rgba(4,8,4,0.72) 0%, rgba(4,8,4,0.9) 100%);
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 2px;
+    padding: 28px 32px;
+    min-width: 360px;
+    max-width: 520px;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 16px 40px rgba(0,0,0,0.45);
+  }
+  .panel.wide { max-width: 720px; width: 720px; }
+  .panel.narrow { width: 400px; }
+
+  .panel-title {
+    margin: 0 0 4px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .panel h2 {
+    margin: 0 0 16px;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text);
+  }
+
+  label.field {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  input[type=text] {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 15px;
+    font-family: var(--ui);
+    color: var(--text);
+    background: rgba(0,0,0,0.35);
+    border: 1px solid var(--line);
+    border-radius: 1px;
+    outline: none;
+  }
+  input[type=text]:focus { border-color: var(--accent-dim); }
+  input[type=text]::placeholder { color: #4a5748; }
+  input.code {
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.28em;
+    text-align: center;
+    font-size: 16px;
+  }
+
+  button {
+    font-family: var(--ui);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+    border-radius: 1px;
+    cursor: pointer;
+    color: #0c120c;
+    background: var(--accent);
+    padding: 11px 16px;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  button:hover:not(:disabled) { background: #9ed07a; }
+  button:active:not(:disabled) { background: #7ab05a; }
+  button:disabled {
+    background: #1a2218; color: #4a5546; border-color: #243022; cursor: not-allowed;
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--text);
+    border-color: var(--panel-edge);
+  }
+  button.secondary:hover:not(:disabled) {
+    background: rgba(139,191,106,0.08);
+    border-color: var(--accent-dim);
+    color: var(--focus);
+  }
+  button.ghost {
+    background: transparent;
+    color: var(--muted);
+    border-color: transparent;
+    letter-spacing: 0.08em;
+  }
+  button.ghost:hover:not(:disabled) { color: var(--text); background: rgba(255,255,255,0.03); }
+  button.block { display: block; width: 100%; }
+  button.icon-btn {
+    width: 36px; height: 36px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent;
+    border: 1px solid var(--panel-edge);
+    color: var(--muted);
+  }
+  button.icon-btn:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--accent-dim);
+    background: rgba(139,191,106,0.06);
+  }
+  button.icon-btn svg { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+
+  .row { display: flex; gap: 10px; align-items: stretch; }
+  .row > * { flex: 1; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .gap-sm { gap: 8px; }
+  .mt-12 { margin-top: 12px; }
+  .mt-16 { margin-top: 16px; }
+  .mt-20 { margin-top: 20px; }
+
+  /* ---------- Main menu (title screen) ---------- */
+  #menu.overlay {
+    align-items: stretch;
+    justify-content: stretch;
+    padding: 0;
+  }
+  .title-screen {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1.15fr 0.95fr;
+    min-height: 100%;
+  }
+  .title-brand {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 48px 40px 52px 56px;
+    position: relative;
+  }
+  .title-brand::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0; width: 4px;
+    background: linear-gradient(180deg, transparent 8%, var(--accent) 35%, var(--sand) 70%, transparent 95%);
+    opacity: 0.85;
+  }
+  .title-kicker {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--sand);
+    margin: 0 0 14px;
+  }
+  .title-logo {
+    margin: 0;
+    font-size: 52px;
+    font-weight: 700;
+    line-height: 0.95;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: #eef4ea;
+    text-shadow: 0 2px 0 rgba(0,0,0,0.45);
+  }
+  .title-logo .slash {
+    color: var(--muted);
+    font-weight: 400;
+    margin: 0 2px;
+  }
+  .title-logo .wear { color: var(--sand); }
+  .title-sub {
+    margin: 16px 0 0;
+    max-width: 28ch;
+    font-size: 15px;
+    line-height: 1.45;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .title-meta {
+    margin-top: 28px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: #556350;
+  }
+
+  .title-actions {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 40px 56px 40px 24px;
+  }
+  .menu-card {
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 2px;
+    padding: 24px 24px 20px;
+    box-shadow: 0 18px 48px rgba(0,0,0,0.4);
+  }
+  .menu-card .field { margin-top: 4px; }
+  .menu-primary { margin-top: 16px; }
+  .menu-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 16px 0 12px;
+    color: #4a5748;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .menu-divider::before,
+  .menu-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+  .menu-links {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 8px;
+  }
+  .menu-links button {
+    text-align: left;
+    justify-content: flex-start;
+    padding: 10px 8px;
+  }
+
+  /* ---------- How to play ---------- */
+  .howto-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px 28px;
+    margin-top: 8px;
+  }
+  .howto-block h3 {
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .howto-block p,
+  .howto-block li {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+  .howto-block ul {
+    margin: 0;
+    padding-left: 1.1em;
+  }
+  .howto-block li + li { margin-top: 4px; }
+  .howto-block.span2 { grid-column: 1 / -1; }
+  .key-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .key {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .key kbd {
+    display: inline-block;
+    min-width: 1.6em;
+    padding: 3px 7px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.2;
+    text-align: center;
+    color: var(--text);
+    background: rgba(0,0,0,0.4);
+    border: 1px solid #3a4a36;
+    border-bottom-width: 2px;
+    border-radius: 2px;
+  }
+  .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 1px;
+    margin-right: 6px;
+    vertical-align: -1px;
+    border: 1px solid rgba(0,0,0,0.35);
+  }
+  .swatch.jungle { background: #4a7c3f; }
+  .swatch.desert { background: #c8a45a; }
+  .swatch.seeker { background: #ff6600; }
+
+  .panel-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 22px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+  }
+
+  /* ---------- Lobby ---------- */
+  .lobby-panel { position: relative; width: 420px; text-align: left; }
+  .lobby-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .lobby-code-wrap { flex: 1; }
+  .lobby-code-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #roomCodeBig {
+    font-family: var(--mono);
+    font-size: 36px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    color: var(--host);
+    margin: 4px 0 10px;
+    line-height: 1.1;
+  }
+  #playerList {
+    list-style: none;
+    padding: 0;
+    margin: 14px 0 0;
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    background: rgba(0,0,0,0.22);
+  }
+  #playerList li {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #playerList li:last-child { border-bottom: none; }
+  .badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 1px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    margin-left: auto;
+  }
+  .badge.host { background: rgba(212,184,74,0.18); color: var(--host); border: 1px solid rgba(212,184,74,0.35); }
+  .badge.hider { background: rgba(74,124,63,0.22); color: var(--accent); border: 1px solid rgba(74,124,63,0.4); }
+  .badge.seeker { background: rgba(224,106,32,0.18); color: var(--seeker); border: 1px solid rgba(224,106,32,0.4); }
+
+  #camoInfo {
+    min-height: 1.2em;
+    margin: 12px 0 4px;
+    font-size: 13px;
+    color: var(--accent);
+  }
+  .lobby-actions { margin-top: 14px; }
+
+  /* ---------- Settings ---------- */
+  #settingsPanel { width: 420px; text-align: left; }
+  #settingsPanel fieldset {
+    border: 1px solid var(--line);
+    border-radius: 1px;
+    margin: 0 0 12px;
+    padding: 10px 12px 12px;
+  }
+  #settingsPanel legend {
+    padding: 0 6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  #settingsPanel label {
+    margin-right: 14px;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  /* ---------- Round / match end ---------- */
+  #announce {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    margin: 14px 0 0;
+    color: var(--muted);
+    text-align: center;
+  }
+  #announce.hider-color { color: var(--accent); }
+  #announce.seeker-color { color: var(--seeker); }
+  table.scores {
+    border-collapse: collapse;
+    margin: 4px 0 0;
+    width: 100%;
+    min-width: 320px;
+  }
+  table.scores th, table.scores td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+    text-align: left;
+  }
+  table.scores th {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  table.scores td { color: var(--text); }
+  #countdownBarWrap {
+    width: 100%;
+    height: 3px;
+    background: rgba(0,0,0,0.45);
+    margin: 18px 0 0;
+    overflow: hidden;
+  }
+  #countdownBar {
+    height: 100%;
+    width: 100%;
+    background: var(--accent);
+  }
+
+  #toast {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 50;
+    max-width: 70%;
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #f0e8e8;
+    background: rgba(90, 24, 24, 0.94);
+    border: 1px solid #7a3030;
+    border-radius: 1px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.35s;
+  }
+
+  .role-flash {
+    position: absolute; inset: 0;
+    display: flex; justify-content: center; align-items: center;
+    z-index: 40; pointer-events: none;
+    font-size: 42px; font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-shadow: 0 2px 16px rgba(0,0,0,0.85);
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="game-container"></div>
+
+  <!-- ===== Title screen ===== -->
+  <div id="menu" class="overlay scrim-heavy">
+    <div class="title-screen">
+      <div class="title-brand">
+        <p class="title-kicker">Multiplayer hide &amp; seek</p>
+        <h1 class="title-logo">Where<span class="slash">/</span><span class="wear">Wear</span><br>Camo</h1>
+        <p class="title-sub">Blend into the map. Stay still. Infect the field when you find them.</p>
+        <p class="title-meta">LOCAL · 1280×720 · SOCKET.IO</p>
+      </div>
+      <div class="title-actions">
+        <div class="menu-card">
+          <label class="field" for="usernameInput">Callsign</label>
+          <input type="text" id="usernameInput" maxlength="16" placeholder="Up to 16 characters" autocomplete="off" spellcheck="false">
+
+          <div class="stack menu-primary">
+            <button type="button" id="createBtn" class="block">Host match</button>
+            <div class="row">
+              <input type="text" id="codeInput" class="code" maxlength="5" placeholder="CODE" autocomplete="off" spellcheck="false">
+              <button type="button" id="joinBtn">Join</button>
+            </div>
+            <button type="button" id="randomBtn" class="secondary block">Quick match</button>
+          </div>
+
+          <div class="menu-divider">or</div>
+          <div class="menu-links">
+            <button type="button" id="soloBtn" class="ghost">Practice offline</button>
+            <button type="button" id="howToBtn" class="ghost">How to play</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== How to play ===== -->
+  <div id="howTo" class="overlay scrim-heavy hidden">
+    <div class="panel wide">
+      <p class="panel-title">Briefing</p>
+      <h2>How to play</h2>
+      <div class="howto-grid">
+        <div class="howto-block">
+          <h3>Objective</h3>
+          <p>Hiders wear a camo pattern and vanish into matching terrain. Seekers hunt with paintballs. A hit turns a hider into a seeker. Roles rotate across five rounds.</p>
+        </div>
+        <div class="howto-block">
+          <h3>Controls</h3>
+          <div class="key-row">
+            <span class="key"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</span>
+            <span class="key"><kbd>LMB</kbd> / <kbd>Space</kbd> Fire (seeker)</span>
+            <span class="key"><kbd>Tab</kbd> Swap role (practice only)</span>
+          </div>
+        </div>
+        <div class="howto-block">
+          <h3>Hiding</h3>
+          <ul>
+            <li>Moving makes your shimmer obvious.</li>
+            <li>Standing still for 2s tightens the shimmer.</li>
+            <li>Matching terrain (Jungle → dense green, Desert → riverbank) makes you harder to spot.</li>
+          </ul>
+        </div>
+        <div class="howto-block">
+          <h3>Seeking</h3>
+          <ul>
+            <li>Fully visible; fire paintballs on a short cooldown.</li>
+            <li>During prep, you stay in the spawn pen and cannot see hiders.</li>
+            <li>Hit a hider to infect them — they join the hunt.</li>
+          </ul>
+        </div>
+        <div class="howto-block span2">
+          <h3>Read the field</h3>
+          <p>
+            <span class="swatch jungle"></span>Jungle camo · zones A &amp; C &nbsp;&nbsp;
+            <span class="swatch desert"></span>Desert camo · zone B &nbsp;&nbsp;
+            <span class="swatch seeker"></span>Seeker
+          </p>
+          <p style="margin-top:8px;">Faint zone tints on the map mark Deep Jungle, Riverbank, Forest Edge, and Clearing. Score for surviving as a hider, last hider standing, and clean sweeps as seekers.</p>
+        </div>
+      </div>
+      <div class="panel-footer">
+        <button type="button" id="howToBack" class="secondary">Back to menu</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Lobby ===== -->
+  <div id="lobby" class="overlay hidden">
+    <div class="panel lobby-panel">
+      <div class="lobby-top">
+        <div class="lobby-code-wrap">
+          <div class="lobby-code-label">Room code</div>
+          <div id="roomCodeBig">-----</div>
+          <button type="button" id="copyBtn" class="secondary">Copy code</button>
+        </div>
+        <button type="button" id="gearBtn" class="icon-btn" title="Match settings" aria-label="Match settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6.1 6.1l1.6 1.6M16.3 16.3l1.6 1.6M17.9 6.1l-1.6 1.6M7.7 16.3l-1.6 1.6"/>
+          </svg>
+        </button>
+      </div>
+      <ul id="playerList"></ul>
+      <div id="camoInfo"></div>
+      <div class="stack lobby-actions gap-sm">
+        <button type="button" id="startBtn" class="block" disabled>Start match</button>
+        <button type="button" id="leaveLobbyBtn" class="secondary block">Leave room</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Host settings ===== -->
+  <div id="settings" class="overlay hidden">
+    <div class="panel" id="settingsPanel">
+      <p class="panel-title">Host</p>
+      <h2>Match settings</h2>
+      <fieldset><legend>Prep time</legend>
+        <label><input type="radio" name="prepTime" value="30"> 30s</label>
+        <label><input type="radio" name="prepTime" value="60" checked> 60s</label>
+        <label><input type="radio" name="prepTime" value="90"> 90s</label>
+      </fieldset>
+      <fieldset><legend>Seek time</legend>
+        <label><input type="radio" name="seekTime" value="120"> 2 min</label>
+        <label><input type="radio" name="seekTime" value="180" checked> 3 min</label>
+        <label><input type="radio" name="seekTime" value="300"> 5 min</label>
+      </fieldset>
+      <fieldset><legend>Minimum players</legend>
+        <label><input type="radio" name="minPlayers" value="2" checked> 2</label>
+        <label><input type="radio" name="minPlayers" value="4"> 4</label>
+        <label><input type="radio" name="minPlayers" value="6"> 6</label>
+      </fieldset>
+      <div class="panel-footer">
+        <button type="button" id="settingsCloseBtn" class="secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Between rounds ===== -->
+  <div id="roundEnd" class="overlay hidden">
+    <div class="panel narrow">
+      <p class="panel-title">Round result</p>
+      <h2 id="roundEndTitle">Round over</h2>
+      <table class="scores"><thead>
+        <tr><th>Player</th><th>Role</th><th>Round</th><th>Total</th></tr>
+      </thead><tbody id="roundScores"></tbody></table>
+      <div id="announce"></div>
+      <div id="countdownBarWrap"><div id="countdownBar"></div></div>
+    </div>
+  </div>
+
+  <!-- ===== Match end ===== -->
+  <div id="matchEnd" class="overlay hidden">
+    <div class="panel narrow">
+      <p class="panel-title">Match complete</p>
+      <h2>Final standings</h2>
+      <table class="scores"><thead>
+        <tr><th>#</th><th>Player</th><th>Score</th></tr>
+      </thead><tbody id="finalScores"></tbody></table>
+      <div class="stack mt-16 gap-sm">
+        <button type="button" id="playAgainBtn" class="block hidden">Play again</button>
+        <button type="button" id="leaveRoomBtn" class="secondary block">Leave room</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+</div>
+
+<script>
+/* ============================================================
+   Where/Wear Camo — client
+   Single-file client: Phaser 3.60 + Socket.io v4.
+   The map is generated by a pure seeded function; server/server.js
+   contains a verbatim copy so collision geometry matches.
+   ============================================================ */
+
+// ---------- Constants (must match server/server.js) ----------
+const MAP_W = 2400, MAP_H = 1800;
+const TILE = 64;
+const MAP_SEED = 1337;
+const PLAYER_SPEED = 160;
+const FIRE_COOLDOWN = 800;       // ms
+const PROJECTILE_SPEED = 500;
+const PROJECTILE_LIFE = 1200;    // ms
+const AIM_LINE_LEN = 180;
+const INPUT_SEND_MS = 50;
+// Local split ports (static :8080 → API :3000). Production / Render: same origin.
+const SERVER_URL = (location.port === '8080' || location.port === '5500' || location.port === '8123')
+  ? (location.protocol + '//' + location.hostname + ':3000')
+  : location.origin;
+
+// Camo patterns. Jungle + Desert are dealt on this map (both have matching
+// zones). Urban is stubbed for a future urban map — dealing it here would be
+// an unfair draw since it matches nothing on a jungle map.
+const CAMO = {
+  jungle: { tint: 0x4a7c3f, label: 'Jungle', zones: ['A', 'C'] },
+  desert: { tint: 0xc8a45a, label: 'Desert', zones: ['B'] },
+  urban:  { tint: 0x7a7a7a, label: 'Urban',  zones: [] },
+};
+const DEALT_CAMOS = ['jungle', 'desert'];
+
+const ZONES = [
+  { id: 'A', name: 'Deep Jungle', x: 200,  y: 200,  w: 600, h: 500, color: 0x2e8b2e },
+  { id: 'B', name: 'Riverbank',   x: 600,  y: 750,  w: 800, h: 300, color: 0xc8a45a },
+  { id: 'C', name: 'Forest Edge', x: 1600, y: 300,  w: 600, h: 600, color: 0x6b8e23 },
+  { id: 'D', name: 'Clearing',    x: 1200, y: 1200, w: 700, h: 400, color: 0xdddd44 },
+];
+
+const HIDER_SPAWNS = [
+  {x:300,y:300}, {x:500,y:800}, {x:900,y:400}, {x:1100,y:1300},
+  {x:1500,y:500}, {x:1800,y:900}, {x:2100,y:300}, {x:2000,y:1500},
+];
+const SEEKER_SPAWN_ZONE = { x: 50, y: 50, w: 150, h: 150 };
+const SEEKER_SPAWNS = [{x:80,y:80}, {x:120,y:120}];
+
+// ---------- Seeded map generation (pure — duplicated in server/server.js) ----------
+function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function generateMap(seed) {
+  const rng = mulberry32(seed);
+  const COLS = Math.ceil(MAP_W / TILE);   // 38
+  const ROWS = Math.ceil(MAP_H / TILE);   // 29
+
+  const waterRows = [13, 14];
+
+  const pathCols = [];
+  let col = 1;
+  for (let r = 0; r < ROWS; r++) {
+    pathCols.push(col);
+    const drift = rng();
+    const target = Math.floor((r / ROWS) * (COLS - 3)) + 1;
+    if (col < target || drift < 0.35) col += 1;
+    else if (drift > 0.85 && col > 1) col -= 1;
+    col = Math.max(1, Math.min(COLS - 2, col));
+  }
+
+  const crossings = new Set();
+  waterRows.forEach(r => {
+    const pc = pathCols[r];
+    [pc - 1, pc, pc + 1].forEach(c => crossings.add(c));
+  });
+  [28, 29, 30].forEach(c => crossings.add(c));
+
+  const groundVariants = [];
+  for (let r = 0; r < ROWS; r++) {
+    const rowV = [];
+    for (let c = 0; c < COLS; c++) rowV.push(rng() < 0.15 ? 1 : 0);
+    groundVariants.push(rowV);
+  }
+
+  const riverY0 = waterRows[0] * TILE, riverY1 = (waterRows[waterRows.length-1] + 1) * TILE;
+  function inRiver(x, y, pad) {
+    return y > riverY0 - pad && y < riverY1 + pad;
+  }
+  function onPath(x, y, pad) {
+    const r = Math.floor(y / TILE);
+    if (r < 0 || r >= ROWS) return false;
+    const pc = pathCols[r];
+    return Math.abs(x - (pc * TILE + TILE/2)) < TILE + pad;
+  }
+  function nearSpawn(x, y) {
+    if (x < SEEKER_SPAWN_ZONE.x + SEEKER_SPAWN_ZONE.w + 80 && y < SEEKER_SPAWN_ZONE.y + SEEKER_SPAWN_ZONE.h + 80) return true;
+    return HIDER_SPAWNS.some(s => Math.hypot(s.x - x, s.y - y) < 90);
+  }
+  const placed = [];
+  function tooClose(x, y, minDist) {
+    return placed.some(p => Math.hypot(p.x - x, p.y - y) < minDist);
+  }
+  function tryPlace(list, kind, x, y, radius, minDist, avoidRiverPad) {
+    if (x < 60 || x > MAP_W - 60 || y < 60 || y > MAP_H - 60) return false;
+    if (inRiver(x, y, avoidRiverPad)) return false;
+    if (onPath(x, y, 10)) return false;
+    if (nearSpawn(x, y)) return false;
+    if (tooClose(x, y, minDist)) return false;
+    list.push({ kind, x, y, radius });
+    placed.push({ x, y });
+    return true;
+  }
+
+  const trees = [];
+  let guard = 0;
+  while (trees.length < 48 && guard++ < 4000) {
+    let x, y;
+    const roll = rng();
+    if (roll < 0.3) {
+      x = ZONES[0].x + rng() * ZONES[0].w; y = ZONES[0].y + rng() * ZONES[0].h;
+    } else if (roll < 0.55) {
+      x = ZONES[2].x + rng() * ZONES[2].w; y = ZONES[2].y + rng() * ZONES[2].h;
+    } else {
+      x = rng() * MAP_W; y = rng() * MAP_H;
+    }
+    const kind = rng() < 0.4 ? 'treeOak' : (rng() < 0.5 ? 'treePine' : 'treePineLarge');
+    tryPlace(trees, kind, x, y, 20, 70, 40);
+  }
+
+  const bushes = [];
+  guard = 0;
+  while (bushes.length < 72 && guard++ < 4000) {
+    const cx = 80 + rng() * (MAP_W - 160), cy = 80 + rng() * (MAP_H - 160);
+    const clusterSize = 3 + Math.floor(rng() * 4);
+    for (let i = 0; i < clusterSize && bushes.length < 72; i++) {
+      const x = cx + (rng() - 0.5) * 180, y = cy + (rng() - 0.5) * 180;
+      const kind = rng() < 0.5 ? 'bush' : 'bushLarge';
+      tryPlace(bushes, kind, x, y, 16, 42, 40);
+    }
+  }
+
+  const rocks = [];
+  guard = 0;
+  while (rocks.length < 30 && guard++ < 3000) {
+    const x = rng() * MAP_W;
+    const y = riverY0 - 40 - rng() * 180;
+    const y2 = riverY1 + 40 + rng() * 180;
+    const yy = rng() < 0.5 ? y : y2;
+    tryPlace(rocks, 'rockLarge', x, yy, 18, 60, 30);
+  }
+
+  const flowers = [];
+  for (let i = 0; i < 60; i++) {
+    const x = 40 + rng() * (MAP_W - 80), y = 40 + rng() * (MAP_H - 80);
+    if (inRiver(x, y, 10)) continue;
+    flowers.push({ kind: rng() < 0.5 ? 'flowerRed' : 'flowerYellow', x, y });
+  }
+
+  return { COLS, ROWS, groundVariants, pathCols, waterRows, crossings, trees, bushes, rocks, flowers };
+}
+
+// ---------- Sound (Web Audio, synthesized — no audio files) ----------
+let audioCtx = null;
+function playSound(type) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = audioCtx;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    const t = ctx.currentTime;
+    if (type === 'shoot') { osc.frequency.value = 800; gain.gain.setValueAtTime(0.3, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15); }
+    if (type === 'hit')   { osc.frequency.value = 200; gain.gain.setValueAtTime(0.5, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3); }
+    if (type === 'start') { osc.frequency.value = 440; gain.gain.setValueAtTime(0.4, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5); }
+    osc.start(t); osc.stop(t + 0.5);
+  } catch (e) { /* audio not critical */ }
+}
+
+// ---------- UI helpers ----------
+const $ = id => document.getElementById(id);
+function show(id) { $(id).classList.remove('hidden'); }
+function hide(id) { $(id).classList.add('hidden'); }
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.style.opacity = 1;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = 0; }, 2600);
+}
+
+// ---------- Game Scene ----------
+class GameScene extends Phaser.Scene {
+  constructor() { super('Game'); }
+
+  preload() {
+    const A = 'assets/nature/';
+    // Ground tiles staged from Kenney Tower Defense (Top-Down) pack, props
+    // from Kenney Nature Kit "Side" renders — both renamed to the design
+    // doc's canonical filenames (the doc's original pack had no flat tiles).
+    this.load.image('grass', A + 'grass.png');
+    this.load.image('grassLight', A + 'grassLight.png');
+    this.load.image('dirt', A + 'dirt.png');
+    this.load.image('sand', A + 'sand.png');
+    this.load.image('water', A + 'water.png');
+    this.load.image('pathDirt', A + 'pathDirt.png');
+    this.load.image('treePine', A + 'treePine.png');
+    this.load.image('treePineLarge', A + 'treePineLarge.png');
+    this.load.image('treeOak', A + 'treeOak.png');
+    this.load.image('bush', A + 'bush.png');
+    this.load.image('bushLarge', A + 'bushLarge.png');
+    this.load.image('flowerRed', A + 'flowerRed.png');
+    this.load.image('flowerYellow', A + 'flowerYellow.png');
+    this.load.image('rockLarge', A + 'rockLarge.png');
+    this.load.image('rockSmall', A + 'rockSmall.png');
+  }
+
+  create() {
+    this.physics.world.setBounds(0, 0, MAP_W, MAP_H);
+    this.map = generateMap(MAP_SEED);
+
+    this.buildGround();
+    this.obstacles = this.physics.add.staticGroup();
+    this.buildWaterCollision();
+    this.buildVegetation();
+    this.buildZoneOverlays();
+
+    // Textures: white circle (tintable) + paintball
+    const g = this.make.graphics({ x: 0, y: 0, add: false });
+    g.fillStyle(0xffffff, 1); g.fillCircle(16, 16, 16);
+    g.generateTexture('playerCircle', 32, 32);
+    g.clear();
+    g.fillStyle(0xffff00, 1); g.fillCircle(5, 5, 5);
+    g.generateTexture('paintball', 10, 10);
+    g.destroy();
+
+    this.projectiles = this.physics.add.group();
+    this.physics.add.collider(this.projectiles, this.obstacles, (proj) => proj.destroy());
+
+    this.aimLine = this.add.graphics().setDepth(9000);
+    this.miniMap = this.add.graphics().setScrollFactor(0).setDepth(10001);
+
+    this.keys = this.input.keyboard.addKeys('W,A,S,D,SPACE');
+    this.input.keyboard.on('keydown-TAB', (e) => {
+      e.preventDefault();
+      if (this.mode === 'solo') this.toggleRole();   // solo practice only
+    });
+
+    this.mode = null;            // 'solo' | 'online'
+    this.player = null;
+    this.remotes = new Map();    // id -> remote sprite
+    this.bots = [];
+    this.phase = 'IDLE';
+    this.remaining = 0;
+    this.lastFired = -FIRE_COOLDOWN;
+    this.lastInputSent = 0;
+    this.lastSentDir = 'none';
+
+    this.buildHUD();
+    this.setHudVisible(false);
+
+    // Idle camera drift over the map behind the menus
+    this.cameras.main.setBounds(0, 0, MAP_W, MAP_H);
+    this.cameras.main.centerOn(1200, 900);
+
+    this.events.emit('scene-ready');
+    window.NET && window.NET.onSceneReady && window.NET.onSceneReady(this);
+  }
+
+  // --- Map construction ---
+  buildGround() {
+    const m = this.map;
+    for (let r = 0; r < m.ROWS; r++) {
+      for (let c = 0; c < m.COLS; c++) {
+        const x = c * TILE + TILE/2, y = r * TILE + TILE/2;
+        let key;
+        if (m.waterRows.includes(r)) {
+          key = m.crossings.has(c) ? 'sand' : 'water';   // fords are sand
+        } else if (m.pathCols[r] === c) {
+          key = 'pathDirt';
+        } else if (Math.abs(m.pathCols[r] - c) === 1 && ((r + c) % 3 === 0)) {
+          key = 'dirt';
+        } else {
+          key = m.groundVariants[r][c] === 1 ? 'grassLight' : 'grass';
+        }
+        this.add.image(x, y, key).setDepth(-10);
+      }
+    }
+    const m0 = m.waterRows[0], m1 = m.waterRows[m.waterRows.length - 1];
+    for (let c = 0; c < m.COLS; c++) {
+      this.add.image(c * TILE + TILE/2, (m0 - 1) * TILE + TILE/2, 'sand').setDepth(-9).setAlpha(0.85);
+      this.add.image(c * TILE + TILE/2, (m1 + 1) * TILE + TILE/2, 'sand').setDepth(-9).setAlpha(0.85);
+    }
+  }
+
+  buildWaterCollision() {
+    const m = this.map;
+    m.waterRows.forEach(r => {
+      let runStart = null;
+      for (let c = 0; c <= m.COLS; c++) {
+        const isWater = c < m.COLS && !m.crossings.has(c);
+        if (isWater && runStart === null) runStart = c;
+        if (!isWater && runStart !== null) {
+          const x = (runStart + (c - runStart) / 2) * TILE;
+          const body = this.add.rectangle(x, r * TILE + TILE/2, (c - runStart) * TILE, TILE);
+          this.physics.add.existing(body, true);
+          this.obstacles.add(body);
+          runStart = null;
+        }
+      }
+    });
+  }
+
+  buildVegetation() {
+    const m = this.map;
+    // Props are flat top-down sprites (same pack as the ground tiles),
+    // drawn centered on their collision circle. The circle center
+    // (x, y - r*0.4) must not change — the server replicates it.
+    const addProp = (p, scale, bodyR, solid) => {
+      const cy = p.y - bodyR * 0.4;
+      const spr = this.add.image(p.x, cy, p.kind).setScale(scale);
+      spr.setDepth(p.y);
+      if (solid) {
+        const zone = this.add.rectangle(p.x, cy, bodyR * 2, bodyR * 2);
+        this.physics.add.existing(zone, true);
+        this.obstacles.add(zone);
+      }
+    };
+    m.trees.forEach(t => addProp(t, t.kind === 'treePine' ? 1.15 : 1.35, 20, true));
+    m.bushes.forEach(b => addProp(b, b.kind === 'bush' ? 1.1 : 1.25, 16, true));
+    m.rocks.forEach(rk => addProp(rk, 0.95, 18, true));
+    m.flowers.forEach(f => {
+      this.add.image(f.x, f.y, f.kind).setDepth(f.y);
+    });
+  }
+
+  buildZoneOverlays() {
+    ZONES.forEach(z => {
+      const g = this.add.graphics().setDepth(-5);
+      g.fillStyle(z.color, 0.08);
+      g.fillRect(z.x, z.y, z.w, z.h);
+    });
+    const g = this.add.graphics().setDepth(-5);
+    g.lineStyle(2, 0xff6600, 0.5);
+    g.strokeRect(SEEKER_SPAWN_ZONE.x, SEEKER_SPAWN_ZONE.y, SEEKER_SPAWN_ZONE.w, SEEKER_SPAWN_ZONE.h);
+  }
+
+  buildHUD() {
+    const mkText = (x, y, str, size, origin) =>
+      this.add.text(x, y, str, { fontFamily: 'Arial, sans-serif', fontSize: size, fontStyle: 'bold', color: '#ffffff', stroke: '#000000', strokeThickness: 4 })
+        .setScrollFactor(0).setDepth(10000).setOrigin(origin, 0);
+    this.hudPhase = mkText(640, 12, '', '32px', 0.5);
+    this.hudTimer = mkText(640, 52, '', '24px', 0.5);
+    this.hudRole  = mkText(16, 12, '', '20px', 0);
+    this.hudCamo  = mkText(16, 40, '', '16px', 0);
+    this.hudRound = mkText(1264, 12, '', '18px', 1);
+  }
+
+  setHudVisible(v) {
+    [this.hudPhase, this.hudTimer, this.hudRole, this.hudCamo, this.hudRound].forEach(t => t.setVisible(v));
+    if (!v) this.miniMap.clear();
+  }
+
+  // --- Player factory ---
+  makePlayerSprite(x, y) {
+    const p = this.physics.add.sprite(x, y, 'playerCircle');
+    p.body.setSize(28, 28);
+    p.setCollideWorldBounds(true);
+    p.stillTimer = 0;
+    this.physics.add.collider(p, this.obstacles);
+    return p;
+  }
+
+  applyCamoTint(sprite, role, camo) {
+    if (role === 'hider') sprite.setTint(CAMO[camo || 'jungle'].tint);
+    else { sprite.setTint(0xff6600); sprite.alpha = 1.0; }
+  }
+
+  // ==================================================================
+  // SOLO PRACTICE MODE (Phase 1 behavior, kept for offline testing)
+  // ==================================================================
+  startSolo() {
+    this.teardown();
+    this.mode = 'solo';
+    this.localCamo = DEALT_CAMOS[Math.floor(Math.random() * DEALT_CAMOS.length)];
+    this.player = this.makePlayerSprite(HIDER_SPAWNS[0].x, HIDER_SPAWNS[0].y);
+    this.player.role = 'hider';
+    this.applyCamoTint(this.player, 'hider', this.localCamo);
+    this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+
+    this.bots = [];
+    [HIDER_SPAWNS[2], HIDER_SPAWNS[4], HIDER_SPAWNS[5]].forEach((s, i) => {
+      const bot = this.makePlayerSprite(s.x, s.y);
+      bot.role = 'hider';
+      bot.camo = DEALT_CAMOS[i % DEALT_CAMOS.length];
+      bot.stillTimer = 99999;
+      this.applyCamoTint(bot, 'hider', bot.camo);
+      this.bots.push(bot);
+    });
+
+    this.phase = 'PREP';
+    this.phaseEndsLocal = this.time.now + 60000;
+    this.setHudVisible(true);
+    this.hudPhase.setText('HIDING PHASE');
+    this.hudRole.setText('ROLE: HIDER');
+    this.hudRound.setText('Practice  ·  Tab swaps role');
+    this.updateCamoHud();
+    playSound('start');
+  }
+
+  toggleRole() {
+    if (!this.player) return;
+    this.player.role = this.player.role === 'hider' ? 'seeker' : 'hider';
+    this.applyCamoTint(this.player, this.player.role, this.localCamo);
+    this.hudRole.setText('ROLE: ' + this.player.role.toUpperCase());
+    this.updateCamoHud();
+    this.aimLine.clear();
+  }
+
+  // ==================================================================
+  // ONLINE MODE
+  // ==================================================================
+  startOnlineRound(data, myId) {
+    this.teardown();
+    this.mode = 'online';
+    this.phase = 'PREP';
+    this.remaining = data.prepTime;
+
+    data.roles.forEach(r => {
+      if (r.id === myId) {
+        this.localCamo = r.camo;
+        this.player = this.makePlayerSprite(r.x, r.y);
+        this.player.role = r.role;
+        this.applyCamoTint(this.player, r.role, r.camo);
+        this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+      } else if (r.x !== undefined) {
+        // Position-less entries (hiders hidden from seekers) spawn lazily
+        // when they first appear in a worldUpdate.
+        this.spawnRemote(r.id, r.x, r.y, r.role, r.camo);
+      }
+    });
+
+    this.setHudVisible(true);
+    this.hudPhase.setText('HIDING PHASE');
+    this.hudRole.setText('ROLE: ' + this.player.role.toUpperCase());
+    this.hudRound.setText('ROUND ' + data.round + ' / ' + data.totalRounds);
+    this.updateCamoHud();
+    playSound('start');
+  }
+
+  spawnRemote(id, x, y, role, camo) {
+    const spr = this.makePlayerSprite(x, y);
+    spr.body.enable = false;              // remotes are server-driven
+    spr.role = role;
+    spr.camo = camo;
+    spr.serverX = x; spr.serverY = y;
+    spr.serverAlpha = role === 'hider' ? 0.4 : 1;
+    this.applyCamoTint(spr, role, camo);
+    this.remotes.set(id, spr);
+    return spr;
+  }
+
+  removeRemote(id) {
+    const spr = this.remotes.get(id);
+    if (spr) { spr.destroy(); this.remotes.delete(id); }
+  }
+
+  applyWorldUpdate(msg, myId) {
+    if (this.mode !== 'online') return;
+    this.remaining = msg.remaining;
+    if (msg.phase === 'SEEK' && this.phase === 'PREP') this.onSeekStarted();
+
+    const seen = new Set();
+    msg.players.forEach(e => {
+      if (e.id === myId) {
+        // Reconciliation: snap on big divergence, gently pull on small drift
+        if (this.player) {
+          const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.x, e.y);
+          if (d > 64) this.player.setPosition(e.x, e.y);
+          else if (d > 6) {
+            this.player.x += (e.x - this.player.x) * 0.25;
+            this.player.y += (e.y - this.player.y) * 0.25;
+          }
+        }
+        return;
+      }
+      seen.add(e.id);
+      let spr = this.remotes.get(e.id);
+      if (!spr) spr = this.spawnRemote(e.id, e.x, e.y, e.role, e.camo);
+      spr.serverX = e.x; spr.serverY = e.y;
+      spr.serverAlpha = e.alpha;
+      if (spr.role !== e.role || spr.camo !== e.camo) {   // role/camo safety net
+        spr.role = e.role;
+        spr.camo = e.camo;
+        this.applyCamoTint(spr, e.role, e.camo);
+      }
+    });
+    // Entries can drop out of my filtered view (PREP anti-cheat) — hide, don't destroy
+    this.remotes.forEach((spr, id) => { spr.setVisible(seen.has(id)); });
+  }
+
+  onSeekStarted() {
+    this.phase = 'SEEK';
+    this.hudPhase.setText('SEEK PHASE');
+    playSound('start');
+  }
+
+  onInfected(targetId, myId) {
+    playSound('hit');
+    const spr = targetId === myId ? this.player : this.remotes.get(targetId);
+    if (!spr) return;
+    if (targetId === myId) {
+      this.player.role = 'seeker';
+      this.hudRole.setText('ROLE: SEEKER');
+      this.updateCamoHud();
+    } else {
+      spr.role = 'seeker';
+      spr.camo = null;
+    }
+    this.tweens.add({ targets: spr, alpha: 1, duration: 100, yoyo: true, repeat: 5,
+      onComplete: () => { if (spr.active) { spr.setTint(0xff6600); spr.alpha = 1.0; } }
+    });
+    const t = this.add.text(spr.x, spr.y - 30, '+1 SEEKER',
+      { fontFamily: 'Arial', fontSize: '18px', fontStyle: 'bold', color: '#ff6600', stroke: '#000', strokeThickness: 3 })
+      .setOrigin(0.5).setDepth(9500);
+    this.tweens.add({ targets: t, y: t.y - 30, alpha: 0, duration: 1500, onComplete: () => t.destroy() });
+  }
+
+  renderRemoteShot(x, y, angle) {
+    playSound('shoot');
+    const proj = this.projectiles.create(x, y, 'paintball');
+    proj.body.setCircle(5);
+    proj.isRemoteVisual = true;           // only local shots report hits
+    this.physics.velocityFromAngle(Phaser.Math.RadToDeg(angle), PROJECTILE_SPEED, proj.body.velocity);
+    proj.setDepth(9000);
+    this.time.delayedCall(PROJECTILE_LIFE, () => { if (proj.active) proj.destroy(); });
+  }
+
+  teardown() {
+    if (this.player) { this.player.destroy(); this.player = null; }
+    this.remotes.forEach(spr => spr.destroy());
+    this.remotes.clear();
+    this.bots.forEach(b => b.destroy());
+    this.bots = [];
+    this.projectiles.clear(true, true);
+    this.aimLine.clear();
+    this.miniMap.clear();
+    this.phase = 'IDLE';
+    this.mode = null;
+    this.setHudVisible(false);
+  }
+
+  // --- Shared bits ---
+  updateCamoHud() {
+    if (this.player && this.player.role === 'hider') {
+      const c = CAMO[this.localCamo];
+      const zones = c.zones.length ? c.zones.join(', ') : 'none';
+      this.hudCamo.setText(`Camo: ${c.label}  ·  zones ${zones}`);
+    } else {
+      this.hudCamo.setText('');
+    }
+  }
+
+  zoneAt(x, y) {
+    for (const z of ZONES) {
+      if (x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h) return z;
+    }
+    return null;
+  }
+
+  tryFire(pointer) {
+    if (this.time.now - this.lastFired < FIRE_COOLDOWN) return;
+    if (this.mode === 'online' && this.phase !== 'SEEK') return;
+    this.lastFired = this.time.now;
+    playSound('shoot');
+    const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, pointer.worldX, pointer.worldY);
+    const proj = this.projectiles.create(this.player.x, this.player.y, 'paintball');
+    proj.body.setCircle(5);
+    proj.isLocalShot = true;
+    proj.reported = new Set();
+    this.physics.velocityFromAngle(Phaser.Math.RadToDeg(angle), PROJECTILE_SPEED, proj.body.velocity);
+    proj.setDepth(9000);
+    this.time.delayedCall(PROJECTILE_LIFE, () => { if (proj.active) proj.destroy(); });
+    if (this.mode === 'online') window.NET.sendShoot(angle);
+  }
+
+  infectBot(bot) {
+    bot.role = 'infected';
+    playSound('hit');
+    this.tweens.add({ targets: bot, alpha: 1, duration: 100, yoyo: true, repeat: 5,
+      onComplete: () => { bot.role = 'seeker'; bot.setTint(0xff6600); bot.alpha = 1.0; }
+    });
+    const t = this.add.text(bot.x, bot.y - 30, '+1 SEEKER',
+      { fontFamily: 'Arial', fontSize: '18px', fontStyle: 'bold', color: '#ff6600', stroke: '#000', strokeThickness: 3 })
+      .setOrigin(0.5).setDepth(9500);
+    this.tweens.add({ targets: t, y: t.y - 30, alpha: 0, duration: 1500, onComplete: () => t.destroy() });
+  }
+
+  // Shimmer — the #1 mechanic; formula per design doc
+  applyShimmer(p, camoKey, delta) {
+    const time = this.time.now / 1000;
+    const isMoving = (p.body.velocity.x !== 0 || p.body.velocity.y !== 0);
+
+    const zone = this.zoneAt(p.x, p.y);
+    const camo = CAMO[camoKey || 'jungle'];
+    const inMatchingZone = zone !== null && camo.zones.includes(zone.id);
+    const mismatch = zone !== null && !inMatchingZone;
+
+    if (isMoving) {
+      p.alpha = 0.5 + 0.4 * Math.sin(time * Math.PI * 3);
+    } else if (p.stillTimer > 2000) {
+      let baseAlpha = inMatchingZone ? 0.22 : 0.35;
+      if (mismatch) baseAlpha *= 1.2;
+      p.alpha = baseAlpha + 0.15 * Math.sin(time * Math.PI * 0.8);
+    } else {
+      p.alpha = 0.45 + 0.25 * Math.sin(time * Math.PI * 1.5);
+    }
+
+    if (isMoving) p.stillTimer = 0;
+    else p.stillTimer += delta;
+  }
+
+  drawMiniMap(myId) {
+    const g = this.miniMap;
+    g.clear();
+    if (!this.player || this.mode === null) return;
+    const MM_X = 1280 - 160 - 12, MM_Y = 720 - 120 - 12, MM_W = 160, MM_H = 120;
+    g.fillStyle(0x000000, 0.8);
+    g.fillRect(MM_X, MM_Y, MM_W, MM_H);
+    const dot = (x, y, r, color) => {
+      g.fillStyle(color, 1);
+      g.fillCircle(MM_X + x / MAP_W * MM_W, MM_Y + y / MAP_H * MM_H, r);
+    };
+    const iAmHider = this.player.role === 'hider';
+    this.remotes.forEach(spr => {
+      if (!spr.visible) return;
+      if (spr.role === 'seeker') dot(spr.x, spr.y, 3, 0xff6600);
+      else if (iAmHider) dot(spr.x, spr.y, 3, 0x44cc44);   // hiders only visible to hiders
+    });
+    this.bots.forEach(b => {
+      if (b.role === 'seeker') dot(b.x, b.y, 3, 0xff6600);
+      else if (iAmHider) dot(b.x, b.y, 3, 0x44cc44);
+    });
+    dot(this.player.x, this.player.y, 4, 0xffffff);
+  }
+
+  update(time, delta) {
+    if (!this.player) return;
+
+    // --- Local movement (prediction online, authoritative solo) ---
+    let dx = 0, dy = 0;
+    if (this.keys.A.isDown) dx -= 1;
+    if (this.keys.D.isDown) dx += 1;
+    if (this.keys.W.isDown) dy -= 1;
+    if (this.keys.S.isDown) dy += 1;
+    const v = new Phaser.Math.Vector2(dx, dy);
+    if (v.length() > 0) v.normalize().scale(PLAYER_SPEED);
+    this.player.setVelocity(v.x, v.y);
+    this.player.setDepth(this.player.y);
+
+    // PREP lock: seekers stay in the spawn zone (server enforces too)
+    if (this.mode === 'online' && this.phase === 'PREP' && this.player.role === 'seeker') {
+      const z = SEEKER_SPAWN_ZONE;
+      this.player.x = Phaser.Math.Clamp(this.player.x, z.x + 14, z.x + z.w - 14);
+      this.player.y = Phaser.Math.Clamp(this.player.y, z.y + 14, z.y + z.h - 14);
+    }
+
+    // --- Send input to server (normalized direction, every 50ms) ---
+    if (this.mode === 'online' && time - this.lastInputSent >= INPUT_SEND_MS) {
+      this.lastInputSent = time;
+      const dir = dx + ',' + dy;
+      window.NET.sendInput(dx, dy);
+      this.lastSentDir = dir;
+    }
+
+    // --- Shimmer: local player ---
+    if (this.player.role === 'hider') {
+      this.applyShimmer(this.player, this.localCamo, delta);
+    } else if (!this.tweens.isTweening(this.player)) {
+      this.player.alpha = 1.0;
+    }
+
+    // --- Remote players: interpolate toward server position; lerp alpha ---
+    this.remotes.forEach(spr => {
+      spr.x += (spr.serverX - spr.x) * 0.2;
+      spr.y += (spr.serverY - spr.y) * 0.2;
+      spr.setDepth(spr.y);
+      if (spr.role === 'hider' && !this.tweens.isTweening(spr)) {
+        spr.alpha += (spr.serverAlpha - spr.alpha) * 0.3;
+      }
+    });
+
+    // --- Solo bots shimmer ---
+    this.bots.forEach(b => {
+      if (b.role === 'hider') this.applyShimmer(b, b.camo, delta);
+      b.setDepth(b.y);
+    });
+
+    // --- Seeker aim + fire ---
+    this.aimLine.clear();
+    if (this.player.role === 'seeker' && (this.mode === 'solo' || this.phase === 'SEEK')) {
+      const pointer = this.input.activePointer;
+      pointer.updateWorldPoint(this.cameras.main);
+      const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, pointer.worldX, pointer.worldY);
+      this.aimLine.lineStyle(2, 0xffffff, 0.4);
+      this.aimLine.beginPath();
+      this.aimLine.moveTo(this.player.x, this.player.y);
+      this.aimLine.lineTo(this.player.x + Math.cos(angle) * AIM_LINE_LEN, this.player.y + Math.sin(angle) * AIM_LINE_LEN);
+      this.aimLine.strokePath();
+      if (pointer.isDown || this.keys.SPACE.isDown) this.tryFire(pointer);
+    }
+
+    // --- Local paintball hit detection ---
+    this.projectiles.getChildren().forEach(proj => {
+      if (!proj.active || !proj.isLocalShot) return;
+      if (this.mode === 'solo') {
+        for (const b of this.bots) {
+          if (b.role !== 'hider') continue;
+          if (Phaser.Math.Distance.Between(proj.x, proj.y, b.x, b.y) < 20) {
+            proj.destroy(); this.infectBot(b); break;
+          }
+        }
+      } else {
+        for (const [id, spr] of this.remotes) {
+          if (spr.role !== 'hider' || !spr.visible || proj.reported.has(id)) continue;
+          if (Phaser.Math.Distance.Between(proj.x, proj.y, spr.x, spr.y) < 20) {
+            proj.reported.add(id);
+            window.NET.sendShootHit(id, proj.x, proj.y);
+            proj.destroy();
+            break;
+          }
+        }
+      }
+    });
+
+    // --- Phase timer ---
+    if (this.mode === 'solo') {
+      const rem = Math.max(0, this.phaseEndsLocal - time);
+      if (rem === 0 && this.phase === 'PREP') {
+        this.phase = 'SEEK';
+        this.phaseEndsLocal = time + 180000;
+        this.hudPhase.setText('SEEK PHASE');
+        playSound('start');
+      }
+      this.remaining = Math.ceil(rem / 1000);
+    }
+    const secs = Math.max(0, this.remaining | 0);
+    this.hudTimer.setText(String(Math.floor(secs / 60)).padStart(2, '0') + ':' + String(secs % 60).padStart(2, '0'));
+
+    this.drawMiniMap();
+  }
+}
+
+// ---------- Networking + UI glue ----------
+window.NET = {
+  socket: null,
+  scene: null,
+  myId: null,
+  isHost: false,
+  roomState: null,
+  countdownTimer: null,
+
+  onSceneReady(scene) { this.scene = scene; },
+
+  connect(cb) {
+    if (this.socket && this.socket.connected) { cb(); return; }
+    this.socket = io(SERVER_URL, { transports: ['websocket', 'polling'] });
+    const s = this.socket;
+
+    s.on('connect', () => { this.myId = s.id; cb && cb(); cb = null; });
+    s.on('connect_error', () => {
+      toast('Cannot reach game server at ' + SERVER_URL + ' — is it running?');
+    });
+
+    s.on('roomCreated', (d) => { this.isHost = true; this.enterLobby(d.roomState); });
+    s.on('roomJoined', (d) => { this.isHost = d.roomState.hostId === this.myId; this.enterLobby(d.roomState); });
+    s.on('joinError', (d) => toast(d.message));
+    s.on('startError', (d) => toast(d.message));
+    s.on('playerJoined', () => {});   // lobbyState follows
+    s.on('playerLeft', (d) => { this.scene && this.scene.removeRemote(d.id); });
+    s.on('lobbyState', (st) => {
+      this.roomState = st;
+      this.isHost = st.hostId === this.myId;
+      if (st.phase === 'LOBBY') {
+        hide('roundEnd'); hide('matchEnd');
+        this.scene && this.scene.teardown();
+        this.enterLobby(st);
+      } else {
+        this.renderLobby(st);
+      }
+    });
+    s.on('hostChanged', (d) => {
+      this.isHost = d.newHostId === this.myId;
+      if (this.isHost) toast('You are now the host.');
+      this.refreshHostUi();
+    });
+
+    s.on('gameStart', () => { hide('lobby'); hide('settings'); });
+    s.on('roundStart', (d) => {
+      hide('lobby'); hide('roundEnd'); hide('matchEnd');
+      this.stopCountdown();
+      this.scene.startOnlineRound(d, this.myId);
+    });
+    s.on('phaseChange', (d) => { if (d.phase === 'SEEK') this.scene.onSeekStarted(); });
+    s.on('worldUpdate', (msg) => this.scene && this.scene.applyWorldUpdate(msg, this.myId));
+    s.on('playerShot', (d) => {
+      if (d.id === this.myId) return;   // own shot already rendered
+      this.scene && this.scene.renderRemoteShot(d.x, d.y, d.angle);
+    });
+    s.on('playerInfected', (d) => this.scene && this.scene.onInfected(d.targetId, this.myId));
+    s.on('hitRejected', () => {});
+    s.on('roundEnd', (d) => this.showRoundEnd(d));
+    s.on('matchEnd', (d) => this.showMatchEnd(d));
+    s.on('disconnect', () => {
+      if (this.scene && this.scene.mode === 'online') {
+        this.scene.teardown();
+        hide('lobby'); hide('roundEnd'); hide('matchEnd'); show('menu');
+        toast('Disconnected from server.');
+      }
+    });
+  },
+
+  setUsername() {
+    const name = $('usernameInput').value.trim().slice(0, 16);
+    this.socket.emit('setUsername', name);
+  },
+
+  sendInput(dx, dy) { this.socket && this.socket.emit('inputUpdate', { dx, dy }); },
+  sendShoot(angle) { this.socket && this.socket.emit('shoot', { angle }); },
+  sendShootHit(targetId, x, y) {
+    this.socket && this.socket.emit('shootHit', { targetId, projectileX: x, projectileY: y });
+  },
+
+  enterLobby(st) {
+    this.roomState = st;
+    hide('menu'); hide('howTo'); hide('roundEnd'); hide('matchEnd');
+    show('lobby');
+    this.renderLobby(st);
+  },
+
+  renderLobby(st) {
+    $('roomCodeBig').textContent = st.code;
+    $('camoInfo').textContent = '';
+    const ul = $('playerList');
+    ul.innerHTML = '';
+    st.players.forEach(p => {
+      const li = document.createElement('li');
+      li.textContent = p.username;
+      if (p.id === st.hostId) {
+        const b = document.createElement('span');
+        b.className = 'badge host'; b.textContent = 'HOST';
+        li.appendChild(b);
+      }
+      if (p.role === 'hider' || p.role === 'seeker') {
+        const b = document.createElement('span');
+        b.className = 'badge ' + p.role; b.textContent = p.role.toUpperCase();
+        li.appendChild(b);
+      }
+      if (p.id === this.myId) {
+        $('camoInfo').textContent = p.camo
+          ? `Your camo: ${CAMO[p.camo].label}`
+          : '';
+      }
+      ul.appendChild(li);
+    });
+    this.refreshHostUi();
+  },
+
+  refreshHostUi() {
+    const st = this.roomState;
+    const n = st ? st.players.length : 0;
+    $('startBtn').classList.toggle('hidden', !this.isHost);
+    $('gearBtn').classList.toggle('hidden', !this.isHost);
+    $('startBtn').disabled = n < 2;
+    $('startBtn').textContent = n < 2 ? 'Start match (need 2+)' : 'Start match';
+    $('playAgainBtn').classList.toggle('hidden', !this.isHost);
+  },
+
+  readSettings() {
+    const pick = name => Number(document.querySelector(`input[name=${name}]:checked`).value);
+    return { prepTime: pick('prepTime'), seekTime: pick('seekTime'), minPlayers: pick('minPlayers') };
+  },
+
+  showRoundEnd(d) {
+    const tbody = $('roundScores');
+    tbody.innerHTML = '';
+    d.scores.sort((a, b) => b.total - a.total).forEach(sc => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${escapeHtml(sc.username)}</td><td>${sc.role || '-'}</td><td>+${sc.roundScore}</td><td>${sc.total}</td>`;
+      tbody.appendChild(tr);
+    });
+    $('roundEndTitle').textContent = d.matchEnd ? 'Final round complete' :
+      (d.reason === 'allInfected' ? 'All hiders found' : 'Round ' + d.round + ' complete');
+
+    const ann = $('announce');
+    if (d.matchEnd) {
+      ann.textContent = 'Final standings loading…';
+      ann.className = '';
+    } else {
+      // Roles for the next round are assigned server-side on roundStart.
+      ann.textContent = 'Next round starting…';
+      ann.className = '';
+    }
+    show('roundEnd');
+
+    // Countdown bar depleting over the intermission
+    const total = (d.nextRoundIn || 8) * 1000;
+    const bar = $('countdownBar');
+    const t0 = performance.now();
+    this.stopCountdown();
+    this.countdownTimer = setInterval(() => {
+      const frac = Math.max(0, 1 - (performance.now() - t0) / total);
+      bar.style.width = (frac * 100) + '%';
+      if (frac === 0) this.stopCountdown();
+    }, 100);
+  },
+
+  stopCountdown() {
+    if (this.countdownTimer) { clearInterval(this.countdownTimer); this.countdownTimer = null; }
+    $('countdownBar').style.width = '100%';
+  },
+
+  showMatchEnd(d) {
+    hide('roundEnd');
+    this.stopCountdown();
+    const tbody = $('finalScores');
+    tbody.innerHTML = '';
+    d.finalScores.forEach((sc, i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${i + 1}</td><td>${escapeHtml(sc.username)}</td><td>${sc.total}</td>`;
+      tbody.appendChild(tr);
+    });
+    this.refreshHostUi();
+    show('matchEnd');
+    this.scene && this.scene.teardown();
+  },
+
+  leaveRoom() {
+    this.socket && this.socket.emit('leaveRoom');
+    this.isHost = false;
+    this.roomState = null;
+    this.scene && this.scene.teardown();
+    hide('lobby'); hide('roundEnd'); hide('matchEnd'); hide('settings'); hide('howTo');
+    show('menu');
+  },
+};
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
+// ---------- Announce role on round start (overlay flash) ----------
+function flashRoleAnnouncement(role) {
+  const div = document.createElement('div');
+  div.className = 'role-flash';
+  div.style.color = role === 'hider' ? '#8bbf6a' : '#e06a20';
+  div.textContent = role === 'hider' ? 'You are hiding' : 'You are seeking';
+  $('wrap').appendChild(div);
+  setTimeout(() => div.remove(), 2500);
+}
+
+// ---------- Wire up UI ----------
+$('createBtn').onclick = () => {
+  window.NET.connect(() => { window.NET.setUsername(); window.NET.socket.emit('createRoom'); });
+};
+$('joinBtn').onclick = () => {
+  const code = $('codeInput').value.trim().toUpperCase();
+  if (code.length !== 5) { toast('Enter the 5-character room code.'); return; }
+  window.NET.connect(() => { window.NET.setUsername(); window.NET.socket.emit('joinRoom', code); });
+};
+$('randomBtn').onclick = () => {
+  window.NET.connect(() => { window.NET.setUsername(); window.NET.socket.emit('joinRandom'); });
+};
+$('soloBtn').onclick = () => {
+  hide('menu');
+  hide('howTo');
+  window.NET.scene.startSolo();
+};
+$('howToBtn').onclick = () => { hide('menu'); show('howTo'); };
+$('howToBack').onclick = () => { hide('howTo'); show('menu'); };
+$('copyBtn').onclick = () => {
+  const code = $('roomCodeBig').textContent;
+  navigator.clipboard && navigator.clipboard.writeText(code).then(
+    () => toast('Code copied: ' + code),
+    () => toast('Copy failed — code is ' + code));
+};
+$('startBtn').onclick = () => {
+  window.NET.socket.emit('startGame', window.NET.readSettings());
+};
+$('gearBtn').onclick = () => { show('settings'); };
+$('settingsCloseBtn').onclick = () => { hide('settings'); };
+$('leaveLobbyBtn').onclick = () => window.NET.leaveRoom();
+$('leaveRoomBtn').onclick = () => window.NET.leaveRoom();
+$('playAgainBtn').onclick = () => { window.NET.socket.emit('playAgain'); };
+
+// Role announcement hook
+(function() {
+  const origStart = GameScene.prototype.startOnlineRound;
+  GameScene.prototype.startOnlineRound = function(data, myId) {
+    origStart.call(this, data, myId);
+    const me = data.roles.find(r => r.id === myId);
+    if (me) flashRoleAnnouncement(me.role);
+  };
+})();
+
+// ---------- Boot ----------
+window.game = new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: 'game-container',
+  width: 1280,
+  height: 720,
+  backgroundColor: '#2d4a2d',
+  physics: { default: 'arcade', arcade: { debug: false } },
+  scene: [GameScene],
+});
+</script>
+</body>
+</html>

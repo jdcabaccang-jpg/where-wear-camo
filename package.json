@@ -1,0 +1,17 @@
+{
+  "name": "where-wear-camo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Where/Wear Camo — multiplayer hide-and-seek",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "test": "node server/test-protocol.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "socket.io": "^4.7.5"
+  }
+}

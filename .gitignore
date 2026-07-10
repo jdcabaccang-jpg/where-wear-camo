@@ -1,0 +1,16 @@
+node_modules/
+server/node_modules/
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.*
+
+# Huge vendor dumps — not needed at runtime (client/assets/nature is staged)
+Kenney Game Assets All-in-1 3.5.0.zip
+kenney_nature-kit/
+assets.json
+Overview.html
+Readme.html
+Visit Kenney*.url
+.claude/
