@@ -458,6 +458,61 @@
   }
   #announce.hider-color { color: var(--accent); }
   #announce.seeker-color { color: var(--seeker); }
+  .round-end-extra {
+    display: grid;
+    grid-template-columns: 1fr 140px;
+    gap: 16px;
+    align-items: start;
+    margin-top: 14px;
+  }
+  .round-end-extra .next-role-block { text-align: left; }
+  .round-end-extra .next-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 4px;
+  }
+  .round-end-extra .next-role-value {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin: 0;
+  }
+  .round-end-extra .next-role-value.hider { color: var(--accent); }
+  .round-end-extra .next-role-value.seeker { color: var(--seeker); }
+  .round-end-extra .next-roster {
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 12px;
+    color: var(--muted);
+    max-height: 72px;
+    overflow-y: auto;
+  }
+  .round-end-extra .next-roster li { padding: 2px 0; }
+  .infect-map-wrap {
+    border: 1px solid var(--line);
+    background: rgba(0,0,0,0.35);
+    padding: 4px;
+  }
+  #infectMap {
+    display: block;
+    width: 132px;
+    height: 99px;
+    image-rendering: pixelated;
+  }
+  .infect-map-label {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: center;
+    margin: 4px 0 0;
+  }
   table.scores {
     border-collapse: collapse;
     margin: 4px 0 0;
@@ -583,6 +638,7 @@
             <li>Moving makes your shimmer obvious.</li>
             <li>Standing still for 2s tightens the shimmer.</li>
             <li>Matching terrain (Jungle → dense green, Desert → riverbank) makes you harder to spot.</li>
+            <li>Survive for points; partial credit if tagged late.</li>
           </ul>
         </div>
         <div class="howto-block">
@@ -590,7 +646,7 @@
           <ul>
             <li>Fully visible; fire paintballs on a short cooldown.</li>
             <li>During prep, you stay in the spawn pen and cannot see hiders.</li>
-            <li>Hit a hider to infect them — they join the hunt.</li>
+            <li>Tags score well — a clean sweep pays the starting seekers.</li>
           </ul>
         </div>
         <div class="howto-block span2">
@@ -640,13 +696,13 @@
       <p class="panel-title">Host</p>
       <h2>Match settings</h2>
       <fieldset><legend>Prep time</legend>
-        <label><input type="radio" name="prepTime" value="30"> 30s</label>
-        <label><input type="radio" name="prepTime" value="60" checked> 60s</label>
+        <label><input type="radio" name="prepTime" value="30" checked> 30s</label>
+        <label><input type="radio" name="prepTime" value="60"> 60s</label>
         <label><input type="radio" name="prepTime" value="90"> 90s</label>
       </fieldset>
       <fieldset><legend>Seek time</legend>
-        <label><input type="radio" name="seekTime" value="120"> 2 min</label>
-        <label><input type="radio" name="seekTime" value="180" checked> 3 min</label>
+        <label><input type="radio" name="seekTime" value="120" checked> 2 min</label>
+        <label><input type="radio" name="seekTime" value="180"> 3 min</label>
         <label><input type="radio" name="seekTime" value="300"> 5 min</label>
       </fieldset>
       <fieldset><legend>Minimum players</legend>
@@ -662,12 +718,23 @@
 
   <!-- ===== Between rounds ===== -->
   <div id="roundEnd" class="overlay hidden">
-    <div class="panel narrow">
+    <div class="panel narrow" style="max-width:480px;width:460px;">
       <p class="panel-title">Round result</p>
       <h2 id="roundEndTitle">Round over</h2>
       <table class="scores"><thead>
         <tr><th>Player</th><th>Role</th><th>Round</th><th>Total</th></tr>
       </thead><tbody id="roundScores"></tbody></table>
+      <div class="round-end-extra" id="roundEndExtra">
+        <div class="next-role-block">
+          <p class="next-label">Next round</p>
+          <p class="next-role-value" id="nextRoleYou">—</p>
+          <ul class="next-roster" id="nextRoleList"></ul>
+        </div>
+        <div class="infect-map-wrap">
+          <canvas id="infectMap" width="132" height="99" aria-label="Tag locations this round"></canvas>
+          <p class="infect-map-label">Tags this round</p>
+        </div>
+      </div>
       <div id="announce"></div>
       <div id="countdownBarWrap"><div id="countdownBar"></div></div>
     </div>
@@ -1086,23 +1153,68 @@ class GameScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
 
     this.bots = [];
+    // Practice hiders: mostly still, occasionally re-settle (training targets when you seek).
     [HIDER_SPAWNS[2], HIDER_SPAWNS[4], HIDER_SPAWNS[5]].forEach((s, i) => {
       const bot = this.makePlayerSprite(s.x, s.y);
       bot.role = 'hider';
+      bot.botKind = 'hider';
       bot.camo = DEALT_CAMOS[i % DEALT_CAMOS.length];
       bot.stillTimer = 99999;
+      bot.ai = {
+        nextRelocate: this.time.now + 12000 + Math.random() * 18000,
+        home: { x: s.x, y: s.y },
+      };
       this.applyCamoTint(bot, 'hider', bot.camo);
+      this.bots.push(bot);
+    });
+    // Practice seekers: imperfect patrol AI (active while you hide).
+    SEEKER_SPAWNS.forEach((s, i) => {
+      const bot = this.makePlayerSprite(s.x + i * 24, s.y + i * 16);
+      bot.role = 'seeker';
+      bot.botKind = 'seeker';
+      bot.stillTimer = 0;
+      bot.ai = this.makeSeekerAi(i);
+      this.applyCamoTint(bot, 'seeker', null);
       this.bots.push(bot);
     });
 
     this.phase = 'PREP';
-    this.phaseEndsLocal = this.time.now + 60000;
+    this.phaseEndsLocal = this.time.now + 30000;   // P0 default prep
     this.setHudVisible(true);
     this.hudPhase.setText('HIDING PHASE');
     this.hudRole.setText('ROLE: HIDER');
     this.hudRound.setText('Practice  ·  Tab swaps role');
     this.updateCamoHud();
     playSound('start');
+  }
+
+  makeSeekerAi(seed) {
+    // Deliberately imperfect: short vision, noisy detection, bad aim, patrol bias.
+    const patrol = [
+      { x: 400, y: 400 }, { x: 900, y: 500 }, { x: 1000, y: 900 },
+      { x: 1600, y: 500 }, { x: 1500, y: 1300 }, { x: 700, y: 1200 },
+      { x: 1800, y: 1000 }, { x: 500, y: 800 },
+    ];
+    // Stagger starting waypoint so the two bots don't twin
+    const startIdx = seed % patrol.length;
+    return {
+      mode: 'patrol',           // patrol | investigate | lost
+      patrol,
+      patrolIdx: startIdx,
+      target: { ...patrol[startIdx] },
+      suspicion: null,          // { x, y, until }
+      noticeAt: 0,              // reaction delay deadline
+      pendingNotice: null,
+      lastScan: 0,
+      lastFired: -FIRE_COOLDOWN,
+      speedMul: 0.78 + seed * 0.06,
+      aimJitter: 0.22 + seed * 0.08,   // radians
+      visionMoving: 200,
+      visionSettling: 110,
+      visionBlended: 64,
+      missChance: 0.35,         // ignore a valid sighting this often
+      loseInterestMs: 3500,
+    };
   }
 
   toggleRole() {
@@ -1112,6 +1224,190 @@ class GameScene extends Phaser.Scene {
     this.hudRole.setText('ROLE: ' + this.player.role.toUpperCase());
     this.updateCamoHud();
     this.aimLine.clear();
+    // Reset seeker AI when you become the prey again
+    if (this.player.role === 'hider') {
+      this.bots.forEach(b => {
+        if (b.botKind === 'seeker') {
+          b.role = 'seeker';
+          b.ai = this.makeSeekerAi(Math.random() * 2 | 0);
+          this.applyCamoTint(b, 'seeker', null);
+        }
+      });
+    }
+  }
+
+  /** Solo hider bots: mostly still, rare short walks (keeps shimmer training honest). */
+  updateHiderBots(time) {
+    this.bots.forEach(b => {
+      if (b.botKind !== 'hider' || b.role !== 'hider') return;
+      if (time < b.ai.nextRelocate) {
+        b.setVelocity(0, 0);
+        return;
+      }
+      // Short shuffle to a nearby bush-ish offset, then freeze again
+      if (!b.ai.walkingTo) {
+        b.ai.walkingTo = {
+          x: Phaser.Math.Clamp(b.ai.home.x + (Math.random() - 0.5) * 140, 80, MAP_W - 80),
+          y: Phaser.Math.Clamp(b.ai.home.y + (Math.random() - 0.5) * 140, 80, MAP_H - 80),
+        };
+      }
+      const ang = Phaser.Math.Angle.Between(b.x, b.y, b.ai.walkingTo.x, b.ai.walkingTo.y);
+      const dist = Phaser.Math.Distance.Between(b.x, b.y, b.ai.walkingTo.x, b.ai.walkingTo.y);
+      if (dist < 12) {
+        b.setVelocity(0, 0);
+        b.ai.home = { x: b.x, y: b.y };
+        b.ai.walkingTo = null;
+        b.ai.nextRelocate = time + 14000 + Math.random() * 20000;
+      } else {
+        b.setVelocity(Math.cos(ang) * PLAYER_SPEED * 0.55, Math.sin(ang) * PLAYER_SPEED * 0.55);
+      }
+    });
+  }
+
+  /**
+   * Solo seeker bots — readable pressure, not aimbot.
+   * They patrol zones, only "notice" nearby shimmer/movement, hesitate,
+   * investigate last-known spots, and shoot with wide aim error.
+   */
+  updateSeekerBots(time, delta) {
+    if (this.player.role !== 'hider' || this.phase !== 'SEEK') {
+      // PREP or player is seeking: lock seeker bots in/near spawn, no hunting
+      this.bots.forEach(b => {
+        if (b.botKind !== 'seeker') return;
+        b.setVelocity(0, 0);
+        if (this.phase === 'PREP') {
+          const z = SEEKER_SPAWN_ZONE;
+          b.x = Phaser.Math.Clamp(b.x, z.x + 14, z.x + z.w - 14);
+          b.y = Phaser.Math.Clamp(b.y, z.y + 14, z.y + z.h - 14);
+        }
+      });
+      return;
+    }
+
+    const hiders = [];
+    if (this.player.role === 'hider') hiders.push(this.player);
+    this.bots.forEach(b => { if (b.botKind === 'hider' && b.role === 'hider') hiders.push(b); });
+
+    this.bots.forEach(b => {
+      if (b.botKind !== 'seeker' || b.role !== 'seeker') return;
+      const ai = b.ai;
+      if (!ai) return;
+
+      // --- Perception (throttled) ---
+      if (time - ai.lastScan > 280) {
+        ai.lastScan = time;
+        let best = null;
+        let bestDist = Infinity;
+        hiders.forEach(h => {
+          const dist = Phaser.Math.Distance.Between(b.x, b.y, h.x, h.y);
+          const moving = h.body && (Math.abs(h.body.velocity.x) + Math.abs(h.body.velocity.y) > 8);
+          const still = (h.stillTimer || 0) > 2000;
+          let range = ai.visionSettling;
+          if (moving) range = ai.visionMoving;
+          else if (still && h.alpha < 0.32) range = ai.visionBlended;
+          else if (still) range = ai.visionSettling * 0.85;
+          // Soft LOS cheat: dense props don't block bots (keeps them simple), range is the limiter.
+          if (dist <= range && dist < bestDist) {
+            best = h;
+            bestDist = dist;
+          }
+        });
+        if (best && Math.random() > ai.missChance) {
+          if (!ai.pendingNotice) {
+            ai.pendingNotice = { x: best.x, y: best.y, id: best };
+            ai.noticeAt = time + 450 + Math.random() * 700; // reaction lag
+          } else if (ai.pendingNotice.id === best) {
+            ai.pendingNotice.x = best.x;
+            ai.pendingNotice.y = best.y;
+          }
+        } else {
+          // Slowly forget if nothing in range
+          if (ai.pendingNotice && time > ai.noticeAt + 200) ai.pendingNotice = null;
+        }
+      }
+
+      if (ai.pendingNotice && time >= ai.noticeAt) {
+        ai.suspicion = {
+          x: ai.pendingNotice.x + (Math.random() - 0.5) * 40,
+          y: ai.pendingNotice.y + (Math.random() - 0.5) * 40,
+          until: time + ai.loseInterestMs,
+        };
+        ai.mode = 'investigate';
+        ai.target = { x: ai.suspicion.x, y: ai.suspicion.y };
+        ai.pendingNotice = null;
+      }
+
+      if (ai.mode === 'investigate' && ai.suspicion && time > ai.suspicion.until) {
+        ai.mode = 'patrol';
+        ai.suspicion = null;
+        ai.patrolIdx = (ai.patrolIdx + 1) % ai.patrol.length;
+        ai.target = { ...ai.patrol[ai.patrolIdx] };
+      }
+
+      // --- Movement toward target ---
+      const tx = ai.target.x, ty = ai.target.y;
+      const distT = Phaser.Math.Distance.Between(b.x, b.y, tx, ty);
+      if (distT < 28) {
+        if (ai.mode === 'investigate') {
+          // Linger briefly, then resume patrol (often leaves without a shot)
+          if (!ai.lingerUntil) ai.lingerUntil = time + 600 + Math.random() * 900;
+          if (time >= ai.lingerUntil) {
+            ai.lingerUntil = 0;
+            ai.mode = 'patrol';
+            ai.suspicion = null;
+            ai.patrolIdx = (ai.patrolIdx + 1) % ai.patrol.length;
+            ai.target = { ...ai.patrol[ai.patrolIdx] };
+          }
+          b.setVelocity(0, 0);
+        } else {
+          ai.patrolIdx = (ai.patrolIdx + 1) % ai.patrol.length;
+          ai.target = { ...ai.patrol[ai.patrolIdx] };
+          // Occasional pause on patrol — reads as "scanning"
+          if (Math.random() < 0.25) {
+            ai.lingerUntil = time + 400 + Math.random() * 800;
+          }
+          b.setVelocity(0, 0);
+        }
+      } else if (ai.lingerUntil && time < ai.lingerUntil) {
+        b.setVelocity(0, 0);
+      } else {
+        ai.lingerUntil = 0;
+        const ang = Phaser.Math.Angle.Between(b.x, b.y, tx, ty);
+        // Slight wander so paths aren't ruler-straight
+        const wander = Math.sin(time * 0.002 + b.x * 0.01) * 0.15;
+        const sp = PLAYER_SPEED * ai.speedMul;
+        b.setVelocity(Math.cos(ang + wander) * sp, Math.sin(ang + wander) * sp);
+      }
+
+      // --- Imperfect fire at nearby visible hiders ---
+      if (time - ai.lastFired < FIRE_COOLDOWN + 200 + Math.random() * 400) return;
+      let shotTarget = null;
+      let shotDist = Infinity;
+      hiders.forEach(h => {
+        const d = Phaser.Math.Distance.Between(b.x, b.y, h.x, h.y);
+        const moving = h.body && (Math.abs(h.body.velocity.x) + Math.abs(h.body.velocity.y) > 8);
+        // Only shoot if "aware": investigating nearby, or very close movement
+        const aware = (ai.mode === 'investigate' && d < 170) || (moving && d < 130) || d < 55;
+        if (aware && d < shotDist && d < 170) {
+          shotTarget = h;
+          shotDist = d;
+        }
+      });
+      if (!shotTarget) return;
+      // 30% chance to hesitate another beat
+      if (Math.random() < 0.3) return;
+      ai.lastFired = time;
+      let ang = Phaser.Math.Angle.Between(b.x, b.y, shotTarget.x, shotTarget.y);
+      ang += (Math.random() - 0.5) * 2 * ai.aimJitter;
+      const proj = this.projectiles.create(b.x, b.y, 'paintball');
+      proj.body.setCircle(5);
+      proj.isBotShot = true;
+      proj.isLocalShot = false;
+      this.physics.velocityFromAngle(Phaser.Math.RadToDeg(ang), PROJECTILE_SPEED * 0.92, proj.body.velocity);
+      proj.setDepth(9000);
+      this.time.delayedCall(PROJECTILE_LIFE, () => { if (proj.active) proj.destroy(); });
+      playSound('shoot');
+    });
   }
 
   // ==================================================================
@@ -1282,12 +1578,41 @@ class GameScene extends Phaser.Scene {
   }
 
   infectBot(bot) {
+    if (!bot || bot.role !== 'hider') return;
     bot.role = 'infected';
     playSound('hit');
     this.tweens.add({ targets: bot, alpha: 1, duration: 100, yoyo: true, repeat: 5,
-      onComplete: () => { bot.role = 'seeker'; bot.setTint(0xff6600); bot.alpha = 1.0; }
+      onComplete: () => {
+        if (!bot.active) return;
+        bot.role = 'seeker';
+        bot.botKind = bot.botKind || 'hider';
+        bot.setTint(0xff6600);
+        bot.alpha = 1.0;
+        bot.setVelocity(0, 0);
+      }
     });
     const t = this.add.text(bot.x, bot.y - 30, '+1 SEEKER',
+      { fontFamily: 'Arial', fontSize: '18px', fontStyle: 'bold', color: '#ff6600', stroke: '#000', strokeThickness: 3 })
+      .setOrigin(0.5).setDepth(9500);
+    this.tweens.add({ targets: t, y: t.y - 30, alpha: 0, duration: 1500, onComplete: () => t.destroy() });
+  }
+
+  /** Solo only: bot paintball tags the local hider. */
+  infectLocalPlayer() {
+    if (!this.player || this.player.role !== 'hider') return;
+    playSound('hit');
+    this.player.role = 'seeker';
+    this.hudRole.setText('ROLE: SEEKER');
+    this.updateCamoHud();
+    this.tweens.add({ targets: this.player, alpha: 1, duration: 100, yoyo: true, repeat: 5,
+      onComplete: () => {
+        if (this.player && this.player.active) {
+          this.player.setTint(0xff6600);
+          this.player.alpha = 1.0;
+        }
+      }
+    });
+    const t = this.add.text(this.player.x, this.player.y - 30, 'TAGGED',
       { fontFamily: 'Arial', fontSize: '18px', fontStyle: 'bold', color: '#ff6600', stroke: '#000', strokeThickness: 3 })
       .setOrigin(0.5).setDepth(9500);
     this.tweens.add({ targets: t, y: t.y - 30, alpha: 0, duration: 1500, onComplete: () => t.destroy() });
@@ -1387,9 +1712,14 @@ class GameScene extends Phaser.Scene {
       }
     });
 
-    // --- Solo bots shimmer ---
+    // --- Solo bots: AI + shimmer ---
+    if (this.mode === 'solo') {
+      this.updateHiderBots(time);
+      this.updateSeekerBots(time, delta);
+    }
     this.bots.forEach(b => {
       if (b.role === 'hider') this.applyShimmer(b, b.camo, delta);
+      else if (!this.tweens.isTweening(b)) b.alpha = 1;
       b.setDepth(b.y);
     });
 
@@ -1407,9 +1737,18 @@ class GameScene extends Phaser.Scene {
       if (pointer.isDown || this.keys.SPACE.isDown) this.tryFire(pointer);
     }
 
-    // --- Local paintball hit detection ---
+    // --- Paintball hit detection (player shots + solo bot shots) ---
     this.projectiles.getChildren().forEach(proj => {
-      if (!proj.active || !proj.isLocalShot) return;
+      if (!proj.active) return;
+      if (this.mode === 'solo' && proj.isBotShot) {
+        if (this.player.role === 'hider' &&
+            Phaser.Math.Distance.Between(proj.x, proj.y, this.player.x, this.player.y) < 20) {
+          proj.destroy();
+          this.infectLocalPlayer();
+        }
+        return;
+      }
+      if (!proj.isLocalShot) return;
       if (this.mode === 'solo') {
         for (const b of this.bots) {
           if (b.role !== 'hider') continue;
@@ -1435,7 +1774,7 @@ class GameScene extends Phaser.Scene {
       const rem = Math.max(0, this.phaseEndsLocal - time);
       if (rem === 0 && this.phase === 'PREP') {
         this.phase = 'SEEK';
-        this.phaseEndsLocal = time + 180000;
+        this.phaseEndsLocal = time + 120000;   // P0 default seek
         this.hudPhase.setText('SEEK PHASE');
         playSound('start');
       }
@@ -1589,12 +1928,37 @@ window.NET = {
     $('roundEndTitle').textContent = d.matchEnd ? 'Final round complete' :
       (d.reason === 'allInfected' ? 'All hiders found' : 'Round ' + d.round + ' complete');
 
+    // Next-role briefing + infect map (P0 intermission)
+    const extra = $('roundEndExtra');
+    if (d.matchEnd) {
+      extra.classList.add('hidden');
+    } else {
+      extra.classList.remove('hidden');
+      const mine = (d.nextRoles || []).find(r => r.id === this.myId);
+      const youEl = $('nextRoleYou');
+      if (mine) {
+        youEl.textContent = mine.nextRole === 'seeker' ? 'You seek' : 'You hide';
+        youEl.className = 'next-role-value ' + mine.nextRole;
+      } else {
+        youEl.textContent = '—';
+        youEl.className = 'next-role-value';
+      }
+      const ul = $('nextRoleList');
+      ul.innerHTML = '';
+      (d.nextRoles || []).forEach(r => {
+        const li = document.createElement('li');
+        const tag = r.nextRole === 'seeker' ? 'seek' : 'hide';
+        li.textContent = `${r.username} · ${tag}`;
+        ul.appendChild(li);
+      });
+      this.drawInfectMap(d.infects || []);
+    }
+
     const ann = $('announce');
     if (d.matchEnd) {
       ann.textContent = 'Final standings loading…';
       ann.className = '';
     } else {
-      // Roles for the next round are assigned server-side on roundStart.
       ann.textContent = 'Next round starting…';
       ann.className = '';
     }
@@ -1610,6 +1974,45 @@ window.NET = {
       bar.style.width = (frac * 100) + '%';
       if (frac === 0) this.stopCountdown();
     }, 100);
+  },
+
+  drawInfectMap(infects) {
+    const canvas = $('infectMap');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    ctx.fillStyle = '#0c140c';
+    ctx.fillRect(0, 0, w, h);
+    // Faint zone blocks so the map is readable
+    const zones = [
+      { x: 200, y: 200, bw: 600, bh: 500, c: 'rgba(46,139,46,0.2)' },
+      { x: 600, y: 750, bw: 800, bh: 300, c: 'rgba(200,164,90,0.18)' },
+      { x: 1600, y: 300, bw: 600, bh: 600, c: 'rgba(107,142,35,0.18)' },
+      { x: 1200, y: 1200, bw: 700, bh: 400, c: 'rgba(220,220,60,0.12)' },
+    ];
+    zones.forEach(z => {
+      ctx.fillStyle = z.c;
+      ctx.fillRect(z.x / MAP_W * w, z.y / MAP_H * h, z.bw / MAP_W * w, z.bh / MAP_H * h);
+    });
+    ctx.strokeStyle = '#2a3d28';
+    ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+    if (!infects.length) {
+      ctx.fillStyle = '#4a5748';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('No tags', w / 2, h / 2 + 3);
+      return;
+    }
+    infects.forEach(ev => {
+      const px = (ev.x / MAP_W) * w;
+      const py = (ev.y / MAP_H) * h;
+      ctx.fillStyle = '#e06a20';
+      ctx.beginPath();
+      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.stroke();
+    });
   },
 
   stopCountdown() {

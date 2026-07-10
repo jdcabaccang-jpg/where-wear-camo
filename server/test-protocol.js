@@ -144,8 +144,11 @@ async function main() {
   check('round ends early when all hiders infected', re.reason === 'allInfected');
   const seekerScore = re.scores.find(s => s.id === seekerId);
   const hiderScore = re.scores.find(s => s.id === hiderId);
-  check('seeker got +10 (hit) +25 (all infected) = 35', seekerScore.roundScore === 35, String(seekerScore.roundScore));
-  check('infected hider got +25 all-infected bonus (now a seeker)', hiderScore.roundScore === 25, String(hiderScore.roundScore));
+  // P0 scoring: tag 30 + sweep 20 for starting seekers; converts get no sweep
+  check('seeker got +30 (tag) +20 (sweep) = 50', seekerScore.roundScore === 50, String(seekerScore.roundScore));
+  check('infected hider got no sweep (started as hider)', hiderScore.roundScore === 0, String(hiderScore.roundScore));
+  check('roundEnd includes nextRoles preview', Array.isArray(re.nextRoles) && re.nextRoles.length === 2);
+  check('roundEnd includes infects map data', Array.isArray(re.infects) && re.infects.length === 1);
   check('roundEnd not matchEnd on round 1', re.matchEnd === false);
 
   // --- Round 2: roles must rotate ---
@@ -155,12 +158,14 @@ async function main() {
   check('roles rotate: previous hider seeks round 2', newSeeker === hiderId,
     `expected ${hiderId}, got ${newSeeker}`);
 
-  // --- Survive round 2 (nobody shoots): hider survives, gets 100 + 50 last-standing ---
+  // --- Survive round 2 (nobody shoots): hider survives, 50 + 25 last-standing ---
   const re2 = await waitFor(seekerSock, 'roundEnd', 20000);
   check('round 2 ends on time expiry', re2.reason === 'time');
   const r2Hider = rs2.roles.find(r => r.role === 'hider').id;
   const r2HiderScore = re2.scores.find(s => s.id === r2Hider);
-  check('survivor scores 100 + 50 last-standing', r2HiderScore.roundScore === 150, String(r2HiderScore.roundScore));
+  check('survivor scores 50 + 25 last-standing = 75', r2HiderScore.roundScore === 75, String(r2HiderScore.roundScore));
+  const myNext = (re2.nextRoles || []).find(r => r.id === seekerSock.id);
+  check('nextRoles present on timed round end', !!myNext && (myNext.nextRole === 'hider' || myNext.nextRole === 'seeker'));
 
   // --- Play through rounds 3-5 quickly, then expect matchEnd ---
   for (let round = 3; round <= 5; round++) {

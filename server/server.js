@@ -91,6 +91,14 @@ const MAX_ROOM_PLAYERS = 16;
 const TOTAL_ROUNDS = 5;
 const ROUNDEND_MS = 8000;
 
+// P0 scoring — hunting pays; pure survival no longer snowballs a match.
+const SCORE_SURVIVE = 50;        // hider still hidden at SEEK end
+const SCORE_LAST_STANDING = 25;  // sole survivor when time expires
+const SCORE_TAG = 30;            // seeker who infects a hider
+const SCORE_SWEEP = 20;          // each starting seeker if zero hiders remain
+const SCORE_SURVIVE_TICK = 5;    // infected hider: +1 per this many seconds alive (cap below)
+const SCORE_SURVIVE_TICK_CAP = 40;
+
 const CAMO = {
   jungle: { zones: ['A', 'C'] },
   desert: { zones: ['B'] },
@@ -349,7 +357,9 @@ function createRoomState(hostId) {
     roundEndTimer: null,
     tick: null,
     phaseEndsAt: 0,
-    settings: { prepTime: 60, seekTime: 180, minPlayers: 2 },
+    seekStartedAt: 0,
+    infectEvents: [],           // { x, y, targetId, seekerId } for intermission map
+    settings: { prepTime: 30, seekTime: 120, minPlayers: 2 },
   };
 }
 
@@ -398,24 +408,27 @@ function clearTimers(room) {
   if (room.roundEndTimer) { clearTimeout(room.roundEndTimer); room.roundEndTimer = null; }
 }
 
-function assignRoles(room) {
-  const players = [...room.players.values()];
+/** Pure preview of who would be seeker next (does not mutate room). */
+function previewSeekerIds(players) {
   const n = players.length;
   const seekerCount = Math.max(1, Math.floor(n * 0.3));
-
-  // Fair rotation: players who have started as seeker least often go first.
-  // (The design doc's literal "swap all roles" degenerates with odd counts —
-  // e.g. 5 players would flip 1v4 into 4v1 — so we rotate the seeker slots
-  // instead, matching its "rotate the extra player" intent.)
   const sorted = [...players].sort((a, b) =>
     (a.seekerRounds - b.seekerRounds) || (a.joinOrder - b.joinOrder));
-  const seekers = new Set(sorted.slice(0, seekerCount).map(p => p.id));
+  return new Set(sorted.slice(0, seekerCount).map(p => p.id));
+}
+
+function assignRoles(room) {
+  const players = [...room.players.values()];
+  // Fair rotation: least-often seekers first (avoids 1v4 ↔ 4v1 flip-flop).
+  const seekers = previewSeekerIds(players);
 
   let hiderIdx = 0, seekerIdx = 0;
   players.forEach(p => {
     p.roundScore = 0;
     p.stillTimer = 0;
     p.dx = 0; p.dy = 0; p.vx = 0; p.vy = 0;
+    p.aliveMs = 0;              // time spent as hider during SEEK (for partial score)
+    p.taggedThisRound = false;
     if (seekers.has(p.id)) {
       p.role = 'seeker';
       p.camo = null;
@@ -423,7 +436,6 @@ function assignRoles(room) {
       p.roundRole = 'seeker';
       p.spawnIndex = seekerIdx;
       const s = SEEKER_SPAWNS[seekerIdx % SEEKER_SPAWNS.length];
-      // stagger extra seekers inside the spawn zone
       p.x = s.x + Math.floor(seekerIdx / SEEKER_SPAWNS.length) * 30;
       p.y = s.y + Math.floor(seekerIdx / SEEKER_SPAWNS.length) * 20;
       seekerIdx++;
@@ -439,8 +451,22 @@ function assignRoles(room) {
   });
 }
 
+/** Next-round role labels for intermission UI (accounts for seekerRounds after this round). */
+function nextRolePreview(room) {
+  // After this round, current round's seekers already incremented seekerRounds.
+  // Preview uses current counters as-is for the upcoming assignRoles call.
+  const seekers = previewSeekerIds([...room.players.values()]);
+  return [...room.players.values()].map(p => ({
+    id: p.id,
+    username: p.username,
+    nextRole: seekers.has(p.id) ? 'seeker' : 'hider',
+  }));
+}
+
 function startRound(room) {
   room.round += 1;
+  room.infectEvents = [];
+  room.seekStartedAt = 0;
   assignRoles(room);
   room.phase = 'PREP';
   room.phaseEndsAt = Date.now() + room.settings.prepTime * 1000;
@@ -470,6 +496,7 @@ function startRound(room) {
     room.prepTimer = null;
     if (room.phase !== 'PREP') return;
     room.phase = 'SEEK';
+    room.seekStartedAt = Date.now();
     room.phaseEndsAt = Date.now() + room.settings.seekTime * 1000;
     io.to(room.code).emit('phaseChange', { phase: 'SEEK', duration: room.settings.seekTime });
     room.seekTimer = setTimeout(() => {
@@ -490,14 +517,34 @@ function endRound(room, reason) {
 
   const players = [...room.players.values()];
   const survivors = players.filter(p => p.role === 'hider');
+  const now = Date.now();
 
-  // Scoring (authoritative)
-  survivors.forEach(p => { p.roundScore += 100; });
-  if (reason === 'time' && survivors.length === 1) {
-    survivors[0].roundScore += 50;    // last hider standing bonus
+  // Finalize aliveMs for still-hiding players
+  if (room.seekStartedAt) {
+    const seekElapsed = now - room.seekStartedAt;
+    survivors.forEach(p => { p.aliveMs = seekElapsed; });
   }
+
+  // Scoring (authoritative, P0)
+  survivors.forEach(p => { p.roundScore += SCORE_SURVIVE; });
+  if (reason === 'time' && survivors.length === 1) {
+    survivors[0].roundScore += SCORE_LAST_STANDING;
+  }
+  // Partial survival for hiders who got tagged mid-round
+  players.forEach(p => {
+    if (p.roundRole === 'hider' && p.role !== 'hider' && p.aliveMs > 0) {
+      const ticks = Math.min(
+        SCORE_SURVIVE_TICK_CAP,
+        Math.floor((p.aliveMs / 1000) / SCORE_SURVIVE_TICK)
+      );
+      p.roundScore += ticks;
+    }
+  });
+  // Sweep: starting seekers only (not mid-round converts) when no survivors
   if (survivors.length === 0) {
-    players.filter(p => p.role === 'seeker').forEach(p => { p.roundScore += 25; });
+    players.filter(p => p.roundRole === 'seeker').forEach(p => {
+      p.roundScore += SCORE_SWEEP;
+    });
   }
   players.forEach(p => { p.score += p.roundScore; });
 
@@ -507,6 +554,8 @@ function endRound(room, reason) {
     roundScore: p.roundScore, total: p.score, role: p.roundRole,
   }));
 
+  const nextRoles = isMatchEnd ? [] : nextRolePreview(room);
+
   io.to(room.code).emit('roundEnd', {
     reason,
     round: room.round,
@@ -514,6 +563,8 @@ function endRound(room, reason) {
     survivors: survivors.map(p => p.id),
     matchEnd: isMatchEnd,
     nextRoundIn: isMatchEnd ? null : ROUNDEND_MS / 1000,
+    nextRoles,
+    infects: room.infectEvents.slice(),
   });
 
   if (isMatchEnd) {
@@ -735,9 +786,19 @@ io.on('connection', (socket) => {
       return;
     }
     // Infection
+    if (room.seekStartedAt) {
+      target.aliveMs = Date.now() - room.seekStartedAt;
+    }
     target.role = 'seeker';
     target.camo = null;
-    shooter.roundScore += 10;
+    target.taggedThisRound = true;
+    shooter.roundScore += SCORE_TAG;
+    room.infectEvents.push({
+      x: Math.round(target.x),
+      y: Math.round(target.y),
+      targetId: target.id,
+      seekerId: shooter.id,
+    });
     io.to(room.code).emit('playerInfected', { targetId: target.id, newSeekerId: shooter.id });
 
     const hidersLeft = [...room.players.values()].filter(pl => pl.role === 'hider').length;
