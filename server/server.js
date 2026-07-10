@@ -319,8 +319,9 @@ function shimmerAlpha(p, nowMs) {
 
 // ---------- HTTP (static client) + Socket.io ----------
 const httpServer = http.createServer((req, res) => {
-  // Health check for hosts / uptime probes
-  if (req.url === '/health' || req.url === '/healthz') {
+  // Health checks (Render dashboard uses /healthz)
+  const pathOnly = (req.url || '/').split('?')[0];
+  if (pathOnly === '/health' || pathOnly === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
     res.end('ok');
     return;
